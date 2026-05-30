@@ -322,7 +322,7 @@ class DieselDashboard(QMainWindow):
             if b_text == 'ENTER':
                 btn.setStyleSheet("background-color: #00897B; color: white;")
             elif b_text == 'C':
-                btn.setStyleSheet("background-color: #E53935; color: white;")
+                btn.setStyleSheet("background -color: #E53935; color: white;")
             else:
                 btn.setStyleSheet("background-color: #263238; color: white; border: 1px solid #37474F;")
             btn.clicked.connect(self.handle_keypad_press)
