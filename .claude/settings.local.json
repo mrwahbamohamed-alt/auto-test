@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('diesel_dashboard_FINAL.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('diesel_dashboard_FINAL.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 // ============================================================
 //  INJECTOR PRO - ESP32 Firmware FINAL
-//  Single Injector | Pressure Sensor | CamBox Sync
+//  Single Injector | Pressure Sensor | CamBox Sync | Custom Freq
 // ============================================================
 //
 //  PIN CONNECTIONS:
@@ -15,16 +15,18 @@
 //  0 BAR   = 1.0V
 //  1600 BAR = 4.5V
 //
-//  CAMBOX:
-//  - إشارة واحدة per revolution
-//  - الرشاش يطلق بعد delay_angle درجة من الإشارة
+//  MODES:
+//  0 = Custom Mode  : حقن بتردد ثابت (Hz) مستقل عن الكام
+//  1 = CamBox Mode  : حقن مزامن مع إشارة الكام + delay angle
 //
 //  SERIAL PROTOCOL (115200 baud):
 //  PC --> ESP32:
 //    start\n      = تشغيل
 //    stop\n       = إيقاف
+//    mode\n       = تبديل بين Custom و CamBox
 //    w<val>\n     = Pulse Width بالميكروثانية (200-3000)
-//    a<val>\n     = Delay Angle بالدرجات (0-45)
+//    f<val>\n     = Frequency بالـ Hz (1-100)  [Custom Mode]
+//    a<val>\n     = Delay Angle بالدرجات (0-45) [CamBox Mode]
 //
 //  ESP32 --> PC:
 //    P:<pressure>,A:<angle>\n  كل 100ms
@@ -45,6 +47,7 @@
 // ---- DEFAULTS ----
 #define DEFAULT_PW_US     1000      // Pulse Width افتراضي
 #define DEFAULT_DELAY_DEG 0         // Delay Angle افتراضي
+#define DEFAULT_FREQ_HZ   25        // تردد افتراضي للـ Custom Mode
 
 // ---- TIMING ----
 #define TELEMETRY_MS      100       // إرسال Telemetry كل 100ms
@@ -61,8 +64,11 @@ volatile unsigned long  rpm_period_us      = 0;   // الفترة بين إشا�
 bool           is_running      = false;
 int            pulse_width_us  = DEFAULT_PW_US;
 int            delay_angle_deg = DEFAULT_DELAY_DEG;
+int            freq_hz         = DEFAULT_FREQ_HZ;
+int            active_mode     = 0;      // 0=Custom, 1=CamBox
 bool           injector_armed  = false;  // هل تم تسليح الحقنة بعد الكام؟
 unsigned long  fire_at_us      = 0;      // الوقت المحسوب للإطلاق
+unsigned long  last_custom_fire_us = 0;  // آخر إطلاق في Custom Mode
 
 unsigned long  last_telemetry  = 0;
 String         serial_buffer   = "";
@@ -119,22 +125,34 @@ void loop() {
 }
 
 // ============================================================
-//  INJECTION LOGIC
-//  عند كل إشارة كام، نحسب وقت التأخير بناءً على delay_angle
-//  ثم نطلق الرشاش بعد هذا الوقت بالظبط
+//  INJECTION LOGIC - يختار المنطق حسب الـ active_mode
 // ============================================================
 void handle_injection() {
+  if (active_mode == 0) {
+    handle_custom_mode();
+  } else {
+    handle_cambox_mode();
+  }
+}
 
-  // هل جاءت إشارة كام جديدة؟
+// ---- Custom Mode: حقن بتردد ثابت ----
+void handle_custom_mode() {
+  unsigned long now = micros();
+  unsigned long period_us = 1000000UL / (unsigned long)freq_hz;
+  if (now - last_custom_fire_us >= period_us) {
+    last_custom_fire_us = now;
+    fire_injector();
+  }
+}
+
+// ---- CamBox Mode: حقن مزامن مع إشارة الكام ----
+void handle_cambox_mode() {
   if (cam_fired) {
     cam_fired = false;
 
     if (delay_angle_deg == 0) {
-      // لا يوجد تأخير - أطلق فوراً
       fire_injector();
     } else {
-      // احسب وقت التأخير من الزاوية
-      // delay_us = (delay_angle / 360) * rpm_period_us
       if (rpm_period_us > 0) {
         unsigned long delay_us = (unsigned long)(
           ((float)delay_angle_deg / DEG_PER_REV) * (float)rpm_period_us
@@ -142,13 +160,11 @@ void handle_injection() {
         fire_at_us     = cam_pulse_time_us + delay_us;
         injector_armed = true;
       } else {
-        // مفيش RPM معروف - أطلق فوراً
         fire_injector();
       }
     }
   }
 
-  // هل حان وقت الإطلاق المؤجل؟
   if (injector_armed && micros() >= fire_at_us) {
     injector_armed = false;
     fire_injector();
@@ -216,6 +232,26 @@ void process_command(String cmd) {
     } else {
       Serial.println("ERR:ANGLE_OUT_OF_RANGE");
     }
+
+  } else if (cmd.startsWith("f")) {
+    // Frequency (Custom Mode)
+    int val = cmd.substring(1).toInt();
+    if (val >= 1 && val <= 100) {
+      freq_hz = val;
+      Serial.print("OK:FREQ:");
+      Serial.println(freq_hz);
+    } else {
+      Serial.println("ERR:FREQ_OUT_OF_RANGE");
+    }
+
+  } else if (cmd == "mode") {
+    // تبديل الوضع
+    active_mode    = (active_mode == 0) ? 1 : 0;
+    injector_armed = false;
+    cam_fired      = false;
+    last_custom_fire_us = 0;
+    Serial.print("OK:MODE:");
+    Serial.println(active_mode == 0 ? "CUSTOM" : "CAMBOX");
 
   } else if (cmd.length() > 0) {
     Serial.print("ERR:UNKNOWN:");
