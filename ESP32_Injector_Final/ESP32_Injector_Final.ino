@@ -5,10 +5,11 @@
 //
 //  PIN CONNECTIONS:
 //  -----------------------------------------------
-//  Injector Output    --> GPIO 25
-//  Pressure Sensor    --> GPIO 34 (Analog 0.5V-4.5V)
-//  CamBox Sync Input  --> GPIO 18 (Interrupt, RISING)
+//  Injector Output    --> GPIO 23
+//  Pressure Sensor    --> GPIO 4 (Analog 0.5V-4.5V)
+//  CamBox Sync Input  --> GPIO 16 (Interrupt, RISING)
 //  Status LED         --> GPIO 2  (Built-in)
+//  Buzzer             --> GPIO 15 (pull-down 10kΩ to GND)
 //  -----------------------------------------------
 //
 //  PRESSURE SENSOR SPECS:
@@ -33,10 +34,11 @@
 // ============================================================
 
 // ---- PINS ----
-#define INJECTOR_PIN      25
-#define PRESSURE_PIN      34
-#define CAMBOX_PIN        18
+#define INJECTOR_PIN      23
+#define PRESSURE_PIN      4
+#define CAMBOX_PIN        16
 #define STATUS_LED_PIN    2
+#define BUZZER_PIN        15
 
 // ---- PRESSURE SENSOR CALIBRATION ----
 #define PRESSURE_V_MIN    1.0f      // فولت عند 0 BAR
@@ -73,6 +75,8 @@ unsigned long  last_custom_fire_us = 0;  // آخر إطلاق في Custom Mode
 unsigned long  last_telemetry  = 0;
 String         serial_buffer   = "";
 
+unsigned long  beep_end_ms     = 0;  // وقت انتهاء الـ beep
+
 // ============================================================
 //  INTERRUPT - CamBox Pulse (RISING EDGE
 // ============================================================
@@ -92,11 +96,13 @@ void setup() {
 
   pinMode(INJECTOR_PIN,   OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN,     OUTPUT);
   pinMode(PRESSURE_PIN,   INPUT);
   pinMode(CAMBOX_PIN,     INPUT_PULLUP);
 
   digitalWrite(INJECTOR_PIN,   LOW);
   digitalWrite(STATUS_LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN,     LOW);
 
   attachInterrupt(digitalPinToInterrupt(CAMBOX_PIN), cambox_isr, RISING);
 
@@ -122,6 +128,9 @@ void loop() {
     send_telemetry();
     last_telemetry = now;
   }
+
+  // 4. إيقاف الـ buzzer لما ينتهي وقته
+  beep_update();
 }
 
 // ============================================================
@@ -172,6 +181,21 @@ void handle_cambox_mode() {
 }
 
 // ============================================================
+//  BUZZER BEEP - non-blocking, بيشغّل الـ buzzer في الـ loop
+// ============================================================
+void beep_start(int duration_ms = 60) {
+  digitalWrite(BUZZER_PIN, HIGH);
+  beep_end_ms = millis() + duration_ms;
+}
+
+void beep_update() {
+  if (beep_end_ms > 0 && millis() >= beep_end_ms) {
+    digitalWrite(BUZZER_PIN, LOW);
+    beep_end_ms = 0;
+  }
+}
+
+// ============================================================
 //  FIRE INJECTOR
 // ============================================================
 void fire_injector() {
@@ -197,6 +221,9 @@ void handle_serial() {
 }
 
 void process_command(String cmd) {
+  if (cmd.length() == 0) return;
+
+  beep_start();  // بيب عند كل أمر وارد
 
   if (cmd == "start") {
     is_running     = true;

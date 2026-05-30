@@ -49,12 +49,14 @@ class SerialWorker(QObject):
     data_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     connection_status = pyqtSignal(bool)
+    command_signal = pyqtSignal(str)  # thread-safe command channel
 
     def __init__(self):
         super().__init__()
         self.serial_port = None
         self.is_running = False
         self._keep_running = True
+        self.command_signal.connect(self._send_command_safe)
 
     def connect_device(self, port, baudrate):
         try:
@@ -87,6 +89,10 @@ class SerialWorker(QObject):
             time.sleep(0.01)
 
     def send_command(self, cmd):
+        # emit via signal so the actual write happens in the worker thread
+        self.command_signal.emit(cmd)
+
+    def _send_command_safe(self, cmd):
         if self.serial_port and self.serial_port.is_open:
             try:
                 self.serial_port.write(f"{cmd}\n".encode('utf-8'))
@@ -110,6 +116,7 @@ class DieselDashboard(QMainWindow):
         self.worker.data_received.connect(self.parse_telemetry)
         self.worker.error_occurred.connect(self.handle_error)
         self.worker.connection_status.connect(self.update_connection_ui)
+        self.worker.connection_status.connect(lambda connected: QTimer.singleShot(600, self.sync_to_esp32) if connected else None)
 
         self.serial_thread.start()
 
@@ -341,6 +348,12 @@ class DieselDashboard(QMainWindow):
                 QMessageBox.warning(self, "No Port", "No COM ports found.")
         else:
             self.worker.disconnect_device()
+
+    def sync_to_esp32(self):
+        """بعد الاتصال ابعت القيم الحالية للـ ESP32 عشان يتزامن مع الـ UI"""
+        self.worker.send_command(f"w{self.pw_spin.value()}")
+        self.worker.send_command(f"f{self.freq_spin.value()}")
+        self.worker.send_command(f"a{self.delay_spin.value()}")
 
     def update_connection_ui(self, connected):
         if connected:

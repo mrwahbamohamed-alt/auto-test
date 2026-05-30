@@ -1,0 +1,6 @@
+{
+    "sketch": "ESP32_Injector_Final/ESP32_Injector_Final.ino",
+    "board": "esp32:esp32:esp32",
+    "port": "COM3",
+    "output": "../.build"
+}
