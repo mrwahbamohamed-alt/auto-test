@@ -10,22 +10,46 @@ from PyQt6.QtWidgets import (
     QGridLayout, QGroupBox, QLabel, QComboBox, QPushButton, QSlider,
     QSpinBox, QRadioButton, QButtonGroup, QLCDNumber, QMessageBox, QFrame
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPalette, QColor
 
 import serial
 import serial.tools.list_ports
 import pyqtgraph as pg
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-# ── constants ──────────────────────────────────────────────────────────
-N_SAMPLES    = 400      # عدد العينات في الجراف (2 ثانية عند 5ms)
-TELEMETRY_MS = 5        # لازم يتطابق مع ESP32
-GRAPH_FPS    = 30       # معدل تحديث الجراف — مفصول عن استقبال البيانات
+# ── constants ─────────────────────────────────────────────────────────
+N_SAMPLES    = 300
+TELEMETRY_MS = 10
+GRAPH_FPS    = 30
 
+# ── Hartridge-inspired color palette ──────────────────────────────────
+BG        = '#0B0D11'
+PANEL     = '#111318'
+HEADER    = '#0D1420'
+BORDER    = '#1C2130'
+BORDER2   = '#2A3347'
+
+PH_GREEN  = '#00E676'   # phosphor green  → INJ
+PH_AMBER  = '#FFB300'   # amber           → Pressure
+PH_BLUE   = '#29B6F6'   # ice blue        → CAM / Custom mode
+PH_PURPLE = '#CE93D8'   # purple          → RPM
+PH_RED    = '#EF5350'   # red             → stop / error
+PH_CYAN   = '#00BCD4'   # cyan            → slider / accent
+
+TXT_PRI   = '#E8EAF0'
+TXT_SEC   = '#8892A4'
+TXT_DIM   = '#3D4558'
+
+# ── graph colors ──────────────────────────────────────────────────────
+G_BG      = '#060912'   # scope background (CRT-like)
+G_GRID    = '#111926'   # grid lines
+G_AMBER   = '#FFB300'
+G_GREEN   = '#00E676'
+G_BLUE    = '#29B6F6'
+
+# ── data ──────────────────────────────────────────────────────────────
 X_DATA = list(range(N_SAMPLES))
-
-# X للـ step display — كل عينة بتتكرر مرتين
 X_STEP = []
 for _i in range(N_SAMPLES):
     X_STEP.extend([_i, _i + 0.999])
@@ -36,32 +60,62 @@ def make_step(buf):
         out.extend([v, v])
     return out
 
-# ── stylesheet ─────────────────────────────────────────────────────────
-STYLE = """
-QMainWindow, QWidget { background-color: #0F0F0F; }
-QGroupBox {
-    background-color: #161616; border: 1px solid #252525;
-    border-radius: 6px; margin-top: 14px;
-    font-size: 11px; font-weight: bold; color: #555;
-}
-QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left; left:10px; padding:0 5px; }
-QLabel { color:#999; font-size:12px; }
-QComboBox, QSpinBox {
-    background-color:#1E1E1E; border:1px solid #2E2E2E;
-    border-radius:4px; padding:4px 8px; color:#DDD; font-size:12px;
-}
-QComboBox::drop-down { border:none; }
-QSlider::groove:horizontal { border:none; height:4px; background:#252525; border-radius:2px; }
-QSlider::handle:horizontal { background:#00ADB5; width:14px; height:14px; margin:-5px 0; border-radius:7px; }
-QSlider::sub-page:horizontal { background:#00ADB5; border-radius:2px; }
-QPushButton {
-    background-color:#1E1E1E; border:1px solid #2E2E2E;
-    color:#CCC; padding:6px 12px; border-radius:4px; font-size:12px;
-}
-QPushButton:hover   { background-color:#262626; border-color:#404040; }
-QPushButton:pressed { background-color:#141414; }
-QLCDNumber { background-color:#060606; border:1px solid #1E1E1E; border-radius:4px; }
-QRadioButton { color:#AAA; font-size:12px; }
+# ── stylesheet ────────────────────────────────────────────────────────
+STYLE = f"""
+QMainWindow, QWidget {{ background:{BG}; color:{TXT_PRI}; }}
+
+QGroupBox {{
+    background:{PANEL}; border:1px solid {BORDER};
+    border-radius:6px; margin-top:20px;
+    font-size:9px; font-weight:bold;
+    color:{TXT_DIM}; letter-spacing:2px;
+}}
+QGroupBox::title {{
+    subcontrol-origin:margin; subcontrol-position:top left;
+    left:10px; padding:0 8px;
+    background:{PANEL};
+}}
+
+QLabel {{ color:{TXT_SEC}; font-size:12px; }}
+
+QComboBox, QSpinBox {{
+    background:{BORDER}; border:1px solid {BORDER2};
+    border-radius:4px; padding:5px 10px;
+    color:{TXT_PRI}; font-size:12px; font-family:monospace;
+}}
+QComboBox:focus, QSpinBox:focus {{ border:1px solid {PH_BLUE}; }}
+QComboBox::drop-down {{ border:none; width:0; }}
+QComboBox::down-arrow {{ image:none; }}
+
+QSlider::groove:horizontal {{
+    border:none; height:3px;
+    background:{BORDER}; border-radius:2px;
+}}
+QSlider::handle:horizontal {{
+    background:{PH_CYAN}; width:13px; height:13px;
+    margin:-5px 0; border-radius:7px;
+    border:2px solid {BG};
+}}
+QSlider::sub-page:horizontal {{ background:{PH_CYAN}; border-radius:2px; }}
+
+QPushButton {{
+    background:{BORDER}; border:1px solid {BORDER2};
+    color:{TXT_SEC}; padding:7px 14px;
+    border-radius:5px; font-size:12px;
+}}
+QPushButton:hover  {{ background:{BORDER2}; color:{TXT_PRI}; border-color:{PH_BLUE}; }}
+QPushButton:pressed {{ background:{BG}; }}
+
+QLCDNumber {{ background:{BG}; border:none; border-radius:4px; }}
+
+QRadioButton {{ color:{TXT_SEC}; font-size:12px; spacing:8px; }}
+QRadioButton::indicator {{
+    width:13px; height:13px;
+    border:2px solid {BORDER2}; border-radius:7px; background:{BORDER};
+}}
+QRadioButton::indicator:checked {{ background:{PH_CYAN}; border-color:{PH_CYAN}; }}
+
+QFrame[frameShape="4"] {{ color:{BORDER2}; }}
 """
 
 
@@ -72,21 +126,20 @@ class SerialWorker(QObject):
     data_received     = pyqtSignal(str)
     error_occurred    = pyqtSignal(str)
     connection_status = pyqtSignal(bool)
-    _cmd_signal       = pyqtSignal(str)   # thread-safe write
+    _cmd              = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.port          = None
         self.is_running    = False
         self._keep_running = True
-        self._cmd_signal.connect(self._write)
+        self._cmd.connect(self._write)
 
     def connect_device(self, port, baud):
         try:
             self.port       = serial.Serial(port, baud, timeout=0.1)
             self.is_running = True
             self.connection_status.emit(True)
-            logging.info(f"Connected {port} @ {baud}")
         except Exception as e:
             self.error_occurred.emit(str(e))
             self.connection_status.emit(False)
@@ -101,18 +154,24 @@ class SerialWorker(QObject):
         while self._keep_running:
             if self.is_running and self.port and self.port.is_open:
                 try:
-                    # استنزف كل البيانات المتاحة دفعة واحدة
+                    latest = None
                     while self.port.in_waiting > 0:
                         raw = self.port.readline().decode('utf-8', errors='ignore').strip()
-                        if raw:
+                        if not raw:
+                            continue
+                        if 'P:' in raw:
+                            latest = raw
+                        else:
                             self.data_received.emit(raw)
+                    if latest:
+                        self.data_received.emit(latest)
                 except Exception as e:
                     self.error_occurred.emit(f"Lost: {e}")
                     self.disconnect_device()
-            time.sleep(0.005)  # 5ms — يتماشى مع معدل الـ telemetry
+            time.sleep(0.010)
 
     def send_command(self, cmd):
-        self._cmd_signal.emit(cmd)
+        self._cmd.emit(cmd)
 
     def _write(self, cmd):
         if self.port and self.port.is_open:
@@ -130,27 +189,35 @@ class DieselDashboard(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("INJECTOR PRO  —  ESP32 Diesel Control")
-        self.resize(1300, 780)
+        self.setWindowTitle("INJECTOR PRO  ·  Diesel Injection Test System")
+        self.resize(1400, 820)
         self.setStyleSheet(STYLE)
 
-        # data
+        # buffers
         self.pressure_buf = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
         self.inj_buf      = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
         self.cam_buf      = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
+
+        # state
         self.total_pulses = 0
         self.graph_paused = False
         self._graph_dirty = False
+        self._mode_id     = 0
 
-        # ── فلاتر EMA ─────────────────────────────────
-        self._rpm_ema  = 0.0   # alpha=0.2  → ناعم ومستقر
-        self._p_ema    = 0.0   # alpha=0.15 → ناعم جداً للضغط
+        # EMA
+        self._p_ema   = 0.0
+        self._rpm_ema = 0.0
+        self._inj_ema = 0.0
 
-        # ── Pulse hold — يضمن عرض ثابت للنبضة ────────
-        # كل frame = 5ms → 2 frames = 10ms minimum visible width
-        self._inj_hold = 0     # عداد تنازلي للـ INJ
-        self._cam_hold = 0     # عداد تنازلي للـ CAM
-        self._inj_rate_ema = 0.0  # فلتر EMA لـ INJ/s — يمنع الرقص
+        # pulse hold
+        self._inj_hold = 0
+        self._cam_hold = 0
+
+        # LCD snapshot (updated at 30fps)
+        self._snap_p = 0.0
+        self._snap_r = 0
+        self._snap_a = 0
+        self._snap_i = 0.0
 
         # serial
         self.thread = QThread()
@@ -161,8 +228,7 @@ class DieselDashboard(QMainWindow):
         self.worker.error_occurred.connect(lambda m: logging.error(m))
         self.worker.connection_status.connect(self._on_conn)
         self.worker.connection_status.connect(
-            lambda ok: QTimer.singleShot(700, self._sync) if ok else None
-        )
+            lambda ok: QTimer.singleShot(700, self._sync) if ok else None)
         self.thread.start()
 
         self._build_ui()
@@ -172,97 +238,139 @@ class DieselDashboard(QMainWindow):
         self._port_timer.start(2000)
         self._refresh_ports()
 
-        # جراف بيتحدث بـ 30fps مستقل عن معدل الـ telemetry
         self._graph_timer = QTimer()
-        self._graph_timer.timeout.connect(self._redraw_graph)
+        self._graph_timer.timeout.connect(self._tick)
         self._graph_timer.start(1000 // GRAPH_FPS)
 
-    # ── layout ────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
+    #  UI BUILD
+    # ──────────────────────────────────────────────────────────────────
     def _build_ui(self):
         root = QWidget(); self.setCentralWidget(root)
-        lay  = QHBoxLayout(root)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(10)
+        main = QVBoxLayout(root)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
 
-        left = QVBoxLayout(); left.setSpacing(8)
-        left.addWidget(self._panel_conn())
-        left.addWidget(self._panel_mode())
-        left.addWidget(self._panel_params())
-        left.addWidget(self._panel_actions())
-        left.addStretch()
+        main.addWidget(self._make_header())
 
-        right = QVBoxLayout(); right.setSpacing(8)
-        right.addWidget(self._panel_status())
-        right.addWidget(self._panel_telem())
-        right.addWidget(self._panel_graph(), stretch=1)
+        body = QHBoxLayout()
+        body.setContentsMargins(12, 10, 12, 12)
+        body.setSpacing(12)
 
-        lay.addLayout(left,  stretch=0)
-        lay.addLayout(right, stretch=1)
+        body.addWidget(self._make_left(),  stretch=0)
+        body.addWidget(self._make_right(), stretch=1)
 
-    # ── connection panel ──────────────────────────────────────────────
+        main.addLayout(body)
+
+    # ──────────────────────────────────────────────────────────────────
+    #  HEADER BAR
+    # ──────────────────────────────────────────────────────────────────
+    def _make_header(self):
+        bar = QWidget()
+        bar.setFixedHeight(44)
+        bar.setStyleSheet(
+            f"background:{HEADER}; border-bottom:1px solid {BORDER2};")
+
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(16, 0, 16, 0)
+
+        # Logo / title
+        logo = QLabel("⬡  INJECTOR PRO")
+        logo.setStyleSheet(
+            f"color:{PH_GREEN}; font-size:15px; font-weight:bold;"
+            f" font-family:monospace; letter-spacing:2px;")
+
+        # Mode pill
+        self.hdr_mode = QLabel("● CUSTOM MODE")
+        self.hdr_mode.setStyleSheet(
+            f"color:{PH_BLUE}; font-size:11px; font-family:monospace; letter-spacing:1px;")
+
+        # Connection status
+        self.hdr_conn = QLabel("○  DISCONNECTED")
+        self.hdr_conn.setStyleSheet(
+            f"color:{PH_RED}; font-size:11px; font-family:monospace; letter-spacing:1px;")
+
+        # Total pulses
+        self.hdr_pulses = QLabel("PULSES: 0")
+        self.hdr_pulses.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:11px; font-family:monospace;")
+
+        h.addWidget(logo)
+        h.addSpacing(30)
+        h.addWidget(self.hdr_mode)
+        h.addStretch()
+        h.addWidget(self.hdr_pulses)
+        h.addSpacing(20)
+        h.addWidget(self._vsep())
+        h.addSpacing(20)
+        h.addWidget(self.hdr_conn)
+        return bar
+
+    # ──────────────────────────────────────────────────────────────────
+    #  LEFT CONTROL PANEL
+    # ──────────────────────────────────────────────────────────────────
+    def _make_left(self):
+        w = QWidget(); w.setFixedWidth(270)
+        v = QVBoxLayout(w); v.setSpacing(10); v.setContentsMargins(0,0,0,0)
+        v.addWidget(self._panel_conn())
+        v.addWidget(self._panel_mode())
+        v.addWidget(self._panel_params())
+        v.addWidget(self._panel_actions())
+        v.addStretch()
+        return w
+
+    # ──────────────────────────────────────────────────────────────────
+    #  RIGHT DISPLAY PANEL
+    # ──────────────────────────────────────────────────────────────────
+    def _make_right(self):
+        w = QWidget()
+        v = QVBoxLayout(w); v.setSpacing(10); v.setContentsMargins(0,0,0,0)
+        v.addWidget(self._panel_meters())
+        v.addWidget(self._panel_scope(), stretch=1)
+        return w
+
+    # ── connection ────────────────────────────────────────────────────
     def _panel_conn(self):
         box = QGroupBox("CONNECTION")
-        g   = QGridLayout(box); g.setSpacing(6)
+        g   = QGridLayout(box); g.setSpacing(8)
 
-        g.addWidget(QLabel("Port:"), 0, 0)
-        self.port_combo = QComboBox(); self.port_combo.setMinimumWidth(110)
+        g.addWidget(self._dim("PORT"), 0, 0)
+        self.port_combo = QComboBox()
         g.addWidget(self.port_combo, 0, 1)
 
-        g.addWidget(QLabel("Baud:"), 1, 0)
+        g.addWidget(self._dim("BAUD"), 1, 0)
         self.baud_combo = QComboBox()
         self.baud_combo.addItems(["115200", "57600", "9600"])
         g.addWidget(self.baud_combo, 1, 1)
 
         self.conn_btn = QPushButton("CONNECT")
-        self._btn_style(self.conn_btn, '#0277BD', '#0288D1')
+        self._style_conn_btn(connected=False)
         self.conn_btn.clicked.connect(self._toggle_conn)
         g.addWidget(self.conn_btn, 2, 0, 1, 2)
 
-        self.conn_lbl = QLabel("DISCONNECTED")
+        self.conn_lbl = QLabel("● DISCONNECTED")
         self.conn_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.conn_lbl.setStyleSheet("color:#EF5350; font-weight:bold; font-size:11px;")
+        self.conn_lbl.setStyleSheet(
+            f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
         g.addWidget(self.conn_lbl, 3, 0, 1, 2)
-        return box
-
-    # ── status bar ────────────────────────────────────────────────────
-    def _panel_status(self):
-        box = QGroupBox("STATUS")
-        h   = QHBoxLayout(box); h.setSpacing(0)
-
-        def cell(title, val, color):
-            v = QVBoxLayout()
-            t = QLabel(title); t.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            t.setStyleSheet("color:#444; font-size:10px; font-weight:bold;")
-            l = QLabel(val);   l.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            l.setStyleSheet(f"color:{color}; font-weight:bold; font-size:15px;")
-            v.addWidget(t); v.addWidget(l)
-            return v, l
-
-        l0, self.mode_lbl   = cell("MODE",        "CUSTOM",  "#00ADB5")
-        l1, self.run_lbl    = cell("ENGINE",       "STOPPED", "#EF5350")
-        l2, self.port_lbl   = cell("PORT",         "—",       "#555")
-        l3, self.pulse_lbl  = cell("TOTAL PULSES", "0",       "#00FF88")
-
-        for i, lyt in enumerate([l0, l1, l2, l3]):
-            h.addLayout(lyt, stretch=1)
-            if i < 3:
-                sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine)
-                sep.setStyleSheet("color:#222;"); h.addWidget(sep)
         return box
 
     # ── mode ──────────────────────────────────────────────────────────
     def _panel_mode(self):
-        box = QGroupBox("MODE")
-        h   = QHBoxLayout(box); h.setSpacing(12)
+        box = QGroupBox("INJECTION MODE")
+        h   = QHBoxLayout(box); h.setSpacing(0)
+
         self.mode_grp  = QButtonGroup(self)
-        self.rb_custom = QRadioButton("Custom (Freq)")
-        self.rb_cam    = QRadioButton("CamBox (Sync)")
+        self.rb_custom = QRadioButton("Custom  (Hz)")
+        self.rb_cam    = QRadioButton("CamBox  (Sync)")
         self.rb_custom.setChecked(True)
         self.mode_grp.addButton(self.rb_custom, 0)
         self.mode_grp.addButton(self.rb_cam,    1)
         self.mode_grp.idToggled.connect(
             lambda id, chk: self._on_mode(id) if chk else None)
-        h.addWidget(self.rb_custom); h.addWidget(self.rb_cam)
+
+        h.addWidget(self.rb_custom)
+        h.addWidget(self.rb_cam)
         return box
 
     # ── parameters ────────────────────────────────────────────────────
@@ -270,17 +378,17 @@ class DieselDashboard(QMainWindow):
         box = QGroupBox("PARAMETERS")
         g   = QGridLayout(box); g.setSpacing(6)
 
-        def row(label, lo, hi, val, step=1):
-            lbl = QLabel(label)
-            sp  = QSpinBox();  sp.setRange(lo, hi); sp.setValue(val); sp.setSingleStep(step)
+        def row(lbl_txt, lo, hi, val, step=1):
+            lbl = self._dim(lbl_txt)
+            sp  = QSpinBox(); sp.setRange(lo, hi); sp.setValue(val); sp.setSingleStep(step)
             sl  = QSlider(Qt.Orientation.Horizontal); sl.setRange(lo, hi); sl.setValue(val)
             sp.valueChanged.connect(sl.setValue)
             sl.valueChanged.connect(sp.setValue)
             return lbl, sp, sl
 
-        self.pw_lbl,  self.pw_sp,  self.pw_sl  = row("Pulse Width (µs)", 200, 3000, 1000, 50)
-        self.fr_lbl,  self.fr_sp,  self.fr_sl  = row("Frequency (Hz)",     1,  100,   25)
-        self.an_lbl,  self.an_sp,  self.an_sl  = row("Delay Angle (°)",    0,   45,    0)
+        self.pw_lbl, self.pw_sp, self.pw_sl = row("PULSE WIDTH (µs)", 200, 3000, 1000, 50)
+        self.fr_lbl, self.fr_sp, self.fr_sl = row("FREQUENCY (Hz)",     1,  100,   25)
+        self.an_lbl, self.an_sp, self.an_sl = row("DELAY ANGLE (°)",    0,   45,    0)
 
         self.pw_sp.valueChanged.connect(lambda v: self.worker.send_command(f"w{v}"))
         self.fr_sp.valueChanged.connect(lambda v: self.worker.send_command(f"f{v}"))
@@ -291,9 +399,15 @@ class DieselDashboard(QMainWindow):
             (self.fr_lbl, self.fr_sp, self.fr_sl),
             (self.an_lbl, self.an_sp, self.an_sl),
         ]):
-            g.addWidget(lbl, i*2,   0)
-            g.addWidget(sp,  i*2,   1)
-            g.addWidget(sl,  i*2+1, 0, 1, 2)
+            g.addWidget(lbl, i*2,   0, 1, 2)
+            g.addWidget(sp,  i*2,   2)
+            g.addWidget(sl,  i*2+1, 0, 1, 3)
+
+        # CamBox delay info
+        self.delay_lbl = QLabel("DELAY  —  ms")
+        self.delay_lbl.setStyleSheet(
+            f"color:{PH_PURPLE}; font-size:11px; font-family:monospace; padding:2px 0;")
+        g.addWidget(self.delay_lbl, 6, 0, 1, 3)
 
         self._cam_visible(False)
         return box
@@ -303,31 +417,34 @@ class DieselDashboard(QMainWindow):
         box = QGroupBox("ACTUATORS")
         g   = QGridLayout(box); g.setSpacing(8)
 
-        self.start_btn = QPushButton("▶  START")
+        self.start_btn = QPushButton("▶   START")
         self.start_btn.setFont(QFont("Arial", 13, QFont.Weight.Bold))
-        self.start_btn.setMinimumHeight(48)
-        self.start_btn.setStyleSheet("""
-            QPushButton         { background:#1B5E20; color:#69F0AE; border-radius:5px; border:1px solid #2E7D32; }
-            QPushButton:hover   { background:#2E7D32; }
-            QPushButton:pressed { background:#0A3D12; }
+        self.start_btn.setMinimumHeight(52)
+        self.start_btn.setStyleSheet(f"""
+            QPushButton         {{background:#052E16;color:{PH_GREEN};
+                                  border:1px solid #064E3B;border-radius:6px;}}
+            QPushButton:hover   {{background:#064E3B;border-color:{PH_GREEN};}}
+            QPushButton:pressed {{background:#021208;}}
         """)
         self.start_btn.clicked.connect(self._on_start)
 
-        self.stop_btn = QPushButton("■  STOP")
+        self.stop_btn = QPushButton("■   STOP")
         self.stop_btn.setFont(QFont("Arial", 13, QFont.Weight.Bold))
-        self.stop_btn.setMinimumHeight(48)
-        self.stop_btn.setStyleSheet("""
-            QPushButton         { background:#7F0000; color:#FF8A80; border-radius:5px; border:1px solid #B71C1C; }
-            QPushButton:hover   { background:#B71C1C; }
-            QPushButton:pressed { background:#4A0000; }
+        self.stop_btn.setMinimumHeight(52)
+        self.stop_btn.setStyleSheet(f"""
+            QPushButton         {{background:#450A0A;color:{PH_RED};
+                                  border:1px solid #7F1D1D;border-radius:6px;}}
+            QPushButton:hover   {{background:#7F1D1D;border-color:{PH_RED};}}
+            QPushButton:pressed {{background:#1A0303;}}
         """)
         self.stop_btn.clicked.connect(self._on_stop)
 
-        self.sync_btn = QPushButton("↺  SYNC TO ESP32")
+        self.sync_btn = QPushButton("↺   SYNC TO ESP32")
         self.sync_btn.setMinimumHeight(30)
-        self.sync_btn.setStyleSheet("""
-            QPushButton       { background:#1A237E; color:#82B1FF; border-radius:4px; border:1px solid #283593; font-size:11px; }
-            QPushButton:hover { background:#283593; }
+        self.sync_btn.setStyleSheet(f"""
+            QPushButton       {{background:#0C1A2E;color:{PH_BLUE};
+                                border:1px solid #1D3A6E;border-radius:5px;font-size:11px;}}
+            QPushButton:hover {{background:#1D3A6E;color:{TXT_PRI};}}
         """)
         self.sync_btn.clicked.connect(self._sync)
 
@@ -336,132 +453,227 @@ class DieselDashboard(QMainWindow):
         g.addWidget(self.sync_btn,  1, 0, 1, 2)
         return box
 
-    # ── telemetry LCDs ────────────────────────────────────────────────
-    def _panel_telem(self):
-        box = QGroupBox("TELEMETRY")
-        h   = QHBoxLayout(box); h.setSpacing(10)
+    # ── meters panel (Hartridge-style large displays) ─────────────────
+    def _panel_meters(self):
+        box = QGroupBox("MEASUREMENTS")
+        h   = QHBoxLayout(box); h.setSpacing(2)
 
-        def lcd(title, color, digits):
-            w = QLCDNumber(); w.setDigitCount(digits); w.setMinimumHeight(60)
-            w.setStyleSheet(f"QLCDNumber{{border:1px solid {color}33; color:{color}; background:#040404;}}")
-            lbl = QLabel(title); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("color:#444; font-size:10px; font-weight:bold;")
-            v = QVBoxLayout(); v.addWidget(lbl); v.addWidget(w)
-            return v, w
+        def meter(label, color, digits, unit=""):
+            # Outer frame
+            frame = QWidget()
+            frame.setStyleSheet(
+                f"background:{PANEL}; border:1px solid {BORDER2}; border-radius:6px;")
+            v = QVBoxLayout(frame); v.setContentsMargins(10, 8, 10, 8); v.setSpacing(4)
 
-        l0, self.lcd_p = lcd("PRESSURE (BAR)", "#FFA726", 7)
-        l1, self.lcd_r = lcd("RPM",            "#00ADB5", 5)
-        l2, self.lcd_a = lcd("DELAY (°)",      "#AB47BC", 3)
-        l3, self.lcd_i = lcd("INJ / s",        "#00FF88", 4)
+            # Top label
+            lbl = QLabel(label.upper())
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet(
+                f"color:{color}50; font-size:9px; font-weight:bold;"
+                f" letter-spacing:2px; font-family:monospace; border:none;")
 
-        for l in [l0, l1, l2, l3]:
-            h.addLayout(l)
+            # LCD
+            lcd = QLCDNumber()
+            lcd.setDigitCount(digits)
+            lcd.setMinimumHeight(70)
+            lcd.setSegmentStyle(QLCDNumber.SegmentStyle.Flat)
+            lcd.setStyleSheet(
+                f"QLCDNumber{{color:{color}; background:#000610;"
+                f" border:1px solid {color}20; border-radius:4px;}}")
+
+            # Bottom unit label
+            unit_lbl = QLabel(unit)
+            unit_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            unit_lbl.setStyleSheet(
+                f"color:{color}60; font-size:10px; font-family:monospace; border:none;")
+
+            v.addWidget(lbl)
+            v.addWidget(lcd)
+            v.addWidget(unit_lbl)
+            return frame, lcd
+
+        f0, self.lcd_r = meter("RPM",      PH_PURPLE, 5, "rev/min")
+        f1, self.lcd_p = meter("PRESSURE", PH_AMBER,  7, "BAR")
+        f2, self.lcd_i = meter("INJ RATE", PH_GREEN,  4, "inj/s")
+        f3, self.lcd_a = meter("ANGLE",    PH_BLUE,   3, "deg")
+
+        # Engine status indicator
+        status_box = QWidget()
+        status_box.setStyleSheet(
+            f"background:{PANEL}; border:1px solid {BORDER2}; border-radius:6px;")
+        sv = QVBoxLayout(status_box); sv.setContentsMargins(10, 8, 10, 8); sv.setSpacing(6)
+
+        sl = QLabel("ENGINE")
+        sl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sl.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:9px; font-weight:bold;"
+            f" letter-spacing:2px; font-family:monospace; border:none;")
+
+        self.run_lbl = QLabel("STOPPED")
+        self.run_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.run_lbl.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        self.run_lbl.setStyleSheet(
+            f"color:{PH_RED}; font-family:monospace; border:none;")
+
+        self.mode_lbl = QLabel("CUSTOM")
+        self.mode_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mode_lbl.setStyleSheet(
+            f"color:{PH_BLUE}; font-size:11px; font-family:monospace;"
+            f" letter-spacing:1px; border:none;")
+
+        sv.addWidget(sl)
+        sv.addStretch()
+        sv.addWidget(self.run_lbl)
+        sv.addWidget(self.mode_lbl)
+        sv.addStretch()
+
+        for f in [f0, f1, f2, f3, status_box]:
+            h.addWidget(f, stretch=1)
+
         return box
 
-    # ── graph (3 stacked plots) ───────────────────────────────────────
-    def _panel_graph(self):
-        box = QGroupBox("LIVE GRAPH")
-        lay = QVBoxLayout(box); lay.setContentsMargins(4, 18, 4, 4)
+    # ── oscilloscope / waveform ───────────────────────────────────────
+    def _panel_scope(self):
+        box = QGroupBox("WAVEFORM  OSCILLOSCOPE")
+        lay = QVBoxLayout(box); lay.setContentsMargins(4, 20, 4, 4)
 
         self.glw = pg.GraphicsLayoutWidget()
-        self.glw.setBackground('#D0D0D0')
+        self.glw.setBackground(G_BG)
 
-        # Pressure
-        self.plt_p = self.glw.addPlot(row=0, col=0)
-        self.plt_p.setLabel('left', 'BAR', color='#B33000', **{'font-size':'9pt'})
-        self.plt_p.getAxis('left').setTextPen('#B33000')
-        self.plt_p.getAxis('left').setWidth(55)
-        self.plt_p.showGrid(x=True, y=True, alpha=0.3)
-        self.plt_p.setMouseEnabled(x=True, y=True)
+        def scope_plot(row, color, label, is_digital=False):
+            p = self.glw.addPlot(row=row, col=0)
+            p.setLabel('left', label, color=color, **{'font-size': '9pt'})
+            p.getAxis('left').setTextPen(color)
+            p.getAxis('left').setWidth(52)
+            p.getAxis('left').setPen(pg.mkPen(BORDER2))
+            p.getAxis('bottom').setPen(pg.mkPen(BORDER2))
+            if is_digital:
+                p.getAxis('left').setTicks([[(0, '0'), (1, '1')]])
+                p.setYRange(-0.07, 1.3)
+            p.showGrid(x=True, y=True, alpha=0.15)
+            p.setMouseEnabled(x=True, y=(not is_digital))
+            return p
+
+        # Plot 1 — Pressure (analog)
+        self.plt_p = scope_plot(0, G_AMBER, 'BAR')
         self.plt_p.hideAxis('bottom')
-        self.curve_p = self.plt_p.plot(X_DATA, list(self.pressure_buf),
-                                        pen=pg.mkPen('#B33000', width=2))
+        self.curve_p = self.plt_p.plot(
+            X_DATA, list(self.pressure_buf),
+            pen=pg.mkPen(G_AMBER, width=2))
 
-        # Injector
-        self.plt_i = self.glw.addPlot(row=1, col=0)
-        self.plt_i.setLabel('left', 'INJ', color='#006030', **{'font-size':'9pt'})
-        self.plt_i.getAxis('left').setTextPen('#006030')
-        self.plt_i.getAxis('left').setWidth(55)
-        self.plt_i.setYRange(-0.1, 1.4)
-        self.plt_i.getAxis('left').setTicks([[(0, '0'), (1, '1')]])
-        self.plt_i.showGrid(x=True, y=False, alpha=0.3)
-        self.plt_i.setMouseEnabled(x=True, y=False)
-        self.plt_i.setXLink(self.plt_p)
+        # Plot 2 — Injector (digital)
+        self.plt_i = scope_plot(1, G_GREEN, 'INJ', is_digital=True)
         self.plt_i.hideAxis('bottom')
-        self.curve_i = pg.PlotCurveItem(X_STEP, [0.0]*(N_SAMPLES*2),
-                                         pen=pg.mkPen('#006030', width=2),
-                                         fillLevel=0.0,
-                                         brush=pg.mkBrush(0, 96, 48, 90))
+        self.plt_i.setXLink(self.plt_p)
+        self.curve_i = pg.PlotCurveItem(
+            X_STEP, [0.0] * (N_SAMPLES * 2),
+            pen=pg.mkPen(G_GREEN, width=2),
+            fillLevel=0.0,
+            brush=pg.mkBrush(0, 230, 118, 35))
         self.plt_i.addItem(self.curve_i)
 
-        # CamBox
-        self.plt_c = self.glw.addPlot(row=2, col=0)
-        self.plt_c.setLabel('left', 'CAM', color='#004466', **{'font-size':'9pt'})
-        self.plt_c.getAxis('left').setTextPen('#004466')
-        self.plt_c.getAxis('left').setWidth(55)
-        self.plt_c.setYRange(-0.1, 1.4)
-        self.plt_c.getAxis('left').setTicks([[(0,'0'),(1,'1')]])
-        self.plt_c.setLabel('bottom', f'Samples  ({TELEMETRY_MS} ms each) — {N_SAMPLES * TELEMETRY_MS // 1000} sec window',
-                             color='#333', **{'font-size':'9pt'})
-        self.plt_c.getAxis('bottom').setTextPen('#333')
-        self.plt_c.showGrid(x=True, y=False, alpha=0.3)
-        self.plt_c.setMouseEnabled(x=True, y=False)
+        # Plot 3 — CamBox (digital)
+        self.plt_c = scope_plot(2, G_BLUE, 'CAM', is_digital=True)
+        self.plt_c.getAxis('bottom').setTextPen(TXT_DIM)
+        self.plt_c.setLabel(
+            'bottom',
+            f'{TELEMETRY_MS} ms / sample  ·  {N_SAMPLES * TELEMETRY_MS // 1000} s window',
+            color=TXT_DIM, **{'font-size': '8pt'})
         self.plt_c.setXLink(self.plt_p)
-        self.curve_c = pg.PlotCurveItem(X_STEP, [0.0]*(N_SAMPLES*2),
-                                         pen=pg.mkPen('#004466', width=2),
-                                         fillLevel=0.0,
-                                         brush=pg.mkBrush(0, 68, 102, 90))
+        self.curve_c = pg.PlotCurveItem(
+            X_STEP, [0.0] * (N_SAMPLES * 2),
+            pen=pg.mkPen(G_BLUE, width=2),
+            fillLevel=0.0,
+            brush=pg.mkBrush(41, 182, 246, 35))
         self.plt_c.addItem(self.curve_c)
 
+        # Height ratios
         self.glw.ci.layout.setRowStretchFactor(0, 3)
         self.glw.ci.layout.setRowStretchFactor(1, 2)
         self.glw.ci.layout.setRowStretchFactor(2, 2)
+        self.glw.ci.layout.setSpacing(1)
 
         lay.addWidget(self.glw)
         return box
 
     # ── helpers ───────────────────────────────────────────────────────
-    def _btn_style(self, btn, c1, c2):
-        btn.setStyleSheet(
-            f"QPushButton{{background:{c1};color:white;font-weight:bold;}}"
-            f"QPushButton:hover{{background:{c2};}}")
+    def _dim(self, txt):
+        l = QLabel(txt)
+        l.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:9px; font-weight:bold;"
+            f" letter-spacing:1px; font-family:monospace;")
+        return l
+
+    def _vsep(self):
+        f = QFrame(); f.setFrameShape(QFrame.Shape.VLine)
+        f.setStyleSheet(f"color:{BORDER2};")
+        f.setFixedHeight(22)
+        return f
+
+    def _style_conn_btn(self, connected):
+        if connected:
+            self.conn_btn.setStyleSheet(f"""
+                QPushButton       {{background:#450A0A;color:{PH_RED};
+                                    font-weight:bold;border-radius:5px;border:1px solid #7F1D1D;}}
+                QPushButton:hover {{background:#7F1D1D;}}""")
+        else:
+            self.conn_btn.setStyleSheet(f"""
+                QPushButton       {{background:#0C1A2E;color:{PH_BLUE};
+                                    font-weight:bold;border-radius:5px;border:1px solid #1D3A6E;}}
+                QPushButton:hover {{background:#1D3A6E;color:{TXT_PRI};}}""")
 
     def _cam_visible(self, vis):
         for w in [self.fr_lbl, self.fr_sp, self.fr_sl]:
             w.setVisible(not vis)
-        for w in [self.an_lbl, self.an_sp, self.an_sl]:
+        for w in [self.an_lbl, self.an_sp, self.an_sl, self.delay_lbl]:
             w.setVisible(vis)
 
-    # ── actions ───────────────────────────────────────────────────────
-    def _redraw_graph(self):
-        if not self._graph_dirty or self.graph_paused:
-            return
-        self._graph_dirty = False
-        self.curve_p.setData(X_DATA, list(self.pressure_buf))
-        self.curve_i.setData(X_STEP, make_step(self.inj_buf))
-        self.curve_c.setData(X_STEP, make_step(self.cam_buf))
+    def _update_delay_label(self):
+        if self._mode_id == 1:
+            if self._rpm_ema > 10:
+                period_ms = 60000.0 / self._rpm_ema
+                delay_ms  = (self.an_sp.value() / 360.0) * period_ms
+                self.delay_lbl.setText(
+                    f"DELAY  {delay_ms:.3f} ms  "
+                    f"({self.an_sp.value()}° @ {int(self._rpm_ema)} RPM)")
+            else:
+                self.delay_lbl.setText("DELAY  —  waiting for RPM signal")
 
+    # ── actions ───────────────────────────────────────────────────────
     def _on_start(self):
         self.worker.send_command("start")
         self.graph_paused = False
         self.run_lbl.setText("RUNNING")
-        self.run_lbl.setStyleSheet("color:#00FF88; font-weight:bold; font-size:15px;")
+        self.run_lbl.setStyleSheet(
+            f"color:{PH_GREEN}; font-family:monospace; border:none;")
 
     def _on_stop(self):
         self.worker.send_command("stop")
         self.graph_paused = True
         self.run_lbl.setText("STOPPED")
-        self.run_lbl.setStyleSheet("color:#EF5350; font-weight:bold; font-size:15px;")
+        self.run_lbl.setStyleSheet(
+            f"color:{PH_RED}; font-family:monospace; border:none;")
 
     def _on_mode(self, mid):
         self.worker.send_command("mode")
+        self._mode_id = mid
         self._cam_visible(mid == 1)
         if mid == 0:
             self.mode_lbl.setText("CUSTOM")
-            self.mode_lbl.setStyleSheet("color:#00ADB5; font-weight:bold; font-size:15px;")
+            self.mode_lbl.setStyleSheet(
+                f"color:{PH_BLUE}; font-size:11px; font-family:monospace;"
+                f" letter-spacing:1px; border:none;")
+            self.hdr_mode.setText("●  CUSTOM MODE")
+            self.hdr_mode.setStyleSheet(
+                f"color:{PH_BLUE}; font-size:11px; font-family:monospace;")
         else:
             self.mode_lbl.setText("CAMBOX")
-            self.mode_lbl.setStyleSheet("color:#AB47BC; font-weight:bold; font-size:15px;")
+            self.mode_lbl.setStyleSheet(
+                f"color:{PH_PURPLE}; font-size:11px; font-family:monospace;"
+                f" letter-spacing:1px; border:none;")
+            self.hdr_mode.setText("●  CAMBOX MODE")
+            self.hdr_mode.setStyleSheet(
+                f"color:{PH_PURPLE}; font-size:11px; font-family:monospace;")
 
     def _refresh_ports(self):
         if not self.worker.is_running:
@@ -491,35 +703,34 @@ class DieselDashboard(QMainWindow):
         self.worker.send_command(f"a{self.an_sp.value()}")
 
     def _on_conn(self, ok):
-        if not ok:
-            # reset فلاتر عند الفصل عشان ما تبداش من قيم قديمة
-            self._rpm_ema = self._p_ema = self._inj_rate_ema = 0.0
-            self._inj_hold = self._cam_hold = 0
+        self._style_conn_btn(ok)
         if ok:
             self.conn_btn.setText("DISCONNECT")
-            self._btn_style(self.conn_btn, '#7F0000', '#B71C1C')
-            self.conn_lbl.setText("CONNECTED")
-            self.conn_lbl.setStyleSheet("color:#66BB6A; font-weight:bold; font-size:11px;")
-            self.port_lbl.setText(self.port_combo.currentText())
-            self.port_lbl.setStyleSheet("color:#CCC; font-weight:bold; font-size:15px;")
+            self.conn_lbl.setText("● CONNECTED")
+            self.conn_lbl.setStyleSheet(
+                f"color:{PH_GREEN}; font-weight:bold; font-size:11px; font-family:monospace;")
+            port = self.port_combo.currentText()
+            self.hdr_conn.setText(f"●  {port}  CONNECTED")
+            self.hdr_conn.setStyleSheet(
+                f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
         else:
             self.conn_btn.setText("CONNECT")
-            self._btn_style(self.conn_btn, '#0277BD', '#0288D1')
-            self.conn_lbl.setText("DISCONNECTED")
-            self.conn_lbl.setStyleSheet("color:#EF5350; font-weight:bold; font-size:11px;")
-            self.port_lbl.setText("—")
-            self.port_lbl.setStyleSheet("color:#555; font-weight:bold; font-size:15px;")
+            self.conn_lbl.setText("○  DISCONNECTED")
+            self.conn_lbl.setStyleSheet(
+                f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
+            self.hdr_conn.setText("○  DISCONNECTED")
+            self.hdr_conn.setStyleSheet(
+                f"color:{PH_RED}; font-size:11px; font-family:monospace;")
+            self._p_ema = self._rpm_ema = self._inj_ema = 0.0
+            self._inj_hold = self._cam_hold = 0
 
-    # ── telemetry parser ──────────────────────────────────────────────
+    # ── data parser ───────────────────────────────────────────────────
     def _on_data(self, raw):
-        # تجاهل ردود الأوامر
         if raw.startswith("OK:") or raw.startswith("ERR:") or "P:" not in raw:
             logging.debug(raw)
             return
-
         if self.graph_paused:
             return
-
         try:
             p = a = r = i = c = 0
             for part in raw.split(','):
@@ -530,44 +741,51 @@ class DieselDashboard(QMainWindow):
                 elif k == 'I': i = int(v)
                 elif k == 'C': c = int(v)
 
-            # ── EMA filters ───────────────────────────
             self._p_ema   = 0.15 * p + 0.85 * self._p_ema
-            self._rpm_ema = 0.08 * r + 0.92 * self._rpm_ema
+            self._rpm_ema = 0.05 * r + 0.95 * self._rpm_ema
+            raw_rate      = i * (1000 / TELEMETRY_MS)
+            self._inj_ema = 0.10 * raw_rate + 0.90 * self._inj_ema
 
-            # ── LCDs (قيم مفلترة) ─────────────────────
-            self.lcd_p.display(f"{self._p_ema:.1f}")
-            self.lcd_r.display(int(self._rpm_ema))
-            self.lcd_a.display(a)
-            raw_inj_rate = i * (1000 / TELEMETRY_MS)
-            self._inj_rate_ema = 0.1 * raw_inj_rate + 0.9 * self._inj_rate_ema
-            self.lcd_i.display(round(self._inj_rate_ema))
+            self._snap_p = self._p_ema
+            self._snap_r = int(self._rpm_ema)
+            self._snap_a = a
+            self._snap_i = self._inj_ema
 
-            # ── pulse counter ──────────────────────────
             self.total_pulses += i
-            self.pulse_lbl.setText(f"{self.total_pulses:,}")
 
-            # ── Pulse hold — نبضة ثابتة العرض ─────────
-            if i > 0:
-                self._inj_hold = 2          # امسك HIGH لمدة 2 frames
-            elif self._inj_hold > 0:
-                self._inj_hold -= 1
+            if i > 0: self._inj_hold = 2
+            elif self._inj_hold > 0: self._inj_hold -= 1
+            if c > 0: self._cam_hold = 2
+            elif self._cam_hold > 0: self._cam_hold -= 1
 
-            if c > 0:
-                self._cam_hold = 2
-            elif self._cam_hold > 0:
-                self._cam_hold -= 1
-
-            inj_display = 1.0 if (i > 0 or self._inj_hold > 0) else 0.0
-            cam_display = 1.0 if (c > 0 or self._cam_hold > 0) else 0.0
-
-            # ── buffers ────────────────────────────────
             self.pressure_buf.append(self._p_ema)
-            self.inj_buf.append(inj_display)
-            self.cam_buf.append(cam_display)
+            self.inj_buf.append(1.0 if (i > 0 or self._inj_hold > 0) else 0.0)
+            self.cam_buf.append(1.0 if (c > 0 or self._cam_hold > 0) else 0.0)
             self._graph_dirty = True
 
         except Exception as e:
-            logging.warning(f"Parse: {raw} → {e}")
+            logging.warning(f"Parse [{raw}]: {e}")
+
+    # ── 30fps tick ────────────────────────────────────────────────────
+    def _tick(self):
+        # LCDs
+        self.lcd_p.display(f"{self._snap_p:.1f}")
+        self.lcd_r.display(self._snap_r)
+        self.lcd_a.display(self._snap_a)
+        self.lcd_i.display(round(self._snap_i))
+
+        # Header
+        self.hdr_pulses.setText(f"PULSES: {self.total_pulses:,}")
+
+        # CamBox delay
+        self._update_delay_label()
+
+        # Graph
+        if self._graph_dirty and not self.graph_paused:
+            self._graph_dirty = False
+            self.curve_p.setData(X_DATA, list(self.pressure_buf))
+            self.curve_i.setData(X_STEP, make_step(self.inj_buf))
+            self.curve_c.setData(X_STEP, make_step(self.cam_buf))
 
     # ── close ─────────────────────────────────────────────────────────
     def closeEvent(self, event):
@@ -599,13 +817,12 @@ def _acquire_lock():
 # ══════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     if not _acquire_lock():
         QMessageBox.warning(None, "Already Running",
-                            "INJECTOR PRO شغال بالفعل!\nأغلق النسخة الموجودة الأول.")
+                            "INJECTOR PRO is already running!")
         sys.exit(0)
 
-    pg.setConfigOptions(antialias=True, foreground='#555')
+    pg.setConfigOptions(antialias=True, foreground=TXT_DIM)
     app.setStyle("Fusion")
     win = DieselDashboard()
     win.show()

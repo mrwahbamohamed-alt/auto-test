@@ -1,360 +1,485 @@
-// ============================================================
-//  INJECTOR PRO - ESP32 Firmware FINAL
-//  Single Injector | Pressure Sensor | CamBox Sync | Custom Freq
-// ============================================================
-//
-//  PIN CONNECTIONS:
-//  -----------------------------------------------
-//  Injector Output    --> GPIO 23
-//  Pressure Sensor    --> GPIO 4 (Analog 0.5V-4.5V)
-//  CamBox Sync Input  --> GPIO 16 (Interrupt, RISING)
-//  Status LED         --> GPIO 2  (Built-in)
-//  Buzzer             --> GPIO 15 (pull-down 10kΩ to GND)
-//  -----------------------------------------------
-//
-//  PRESSURE SENSOR SPECS:
-//  0 BAR   = 1.0V
-//  1600 BAR = 4.5V
-//
-//  MODES:
-//  0 = Custom Mode  : حقن بتردد ثابت (Hz) مستقل عن الكام
-//  1 = CamBox Mode  : حقن مزامن مع إشارة الكام + delay angle
-//
-//  SERIAL PROTOCOL (115200 baud):
-//  PC --> ESP32:
-//    start\n      = تشغيل
-//    stop\n       = إيقاف
-//    mode\n       = تبديل بين Custom و CamBox
-//    w<val>\n     = Pulse Width بالميكروثانية (200-3000)
-//    f<val>\n     = Frequency بالـ Hz (1-100)  [Custom Mode]
-//    a<val>\n     = Delay Angle بالدرجات (0-45) [CamBox Mode]
-//
-//  ESP32 --> PC:
-//    P:<pressure>,A:<angle>,R:<rpm>,I:<inj_count>,C:<cam_count>\n  كل 5ms
-// ============================================================
+/**
+ * ================================================================
+ *  INJECTOR PRO — ESP32 Firmware  (Professional Industrial Build)
+ *  Diesel Injection Test System
+ * ================================================================
+ *
+ *  ARCHITECTURE:
+ *  ┌─────────────────────────────────────────────────────────┐
+ *  │  CAM ISR  (IRAM_ATTR, RISING)                          │
+ *  │   Stage-1 debounce  → rejects EMI bursts  < 1 ms       │
+ *  │   Stage-2 plausibility → rejects > 8000 RPM pulses     │
+ *  │   Rolling RPM window  → stores last 8 periods           │
+ *  │   Sets s_cam_fired flag (main loop reads)               │
+ *  └──────────────────────────┬──────────────────────────────┘
+ *                             │ flag
+ *                             ▼
+ *  ┌─────────────────────────────────────────────────────────┐
+ *  │  MAIN LOOP  (purely reactive — zero blocking)          │
+ *  │  handle_serial()    read chars, parse on '\n'           │
+ *  │  handle_custom()    micros() compare → fire             │
+ *  │  handle_cambox()    flag + armed timer → fire           │
+ *  │  update_pressure()  1 ADC sample / iteration            │
+ *  │  send_telemetry()   every 10 ms                         │
+ *  │  beep_update()      non-blocking buzzer                 │
+ *  └──────────────────────────┬──────────────────────────────┘
+ *                             │
+ *                             ▼
+ *  ┌─────────────────────────────────────────────────────────┐
+ *  │  RMT TX  (hardware pulse — GPIO 23)                    │
+ *  │  Resolution  1 µs/tick  (1 MHz clock)                  │
+ *  │  Idle level  LOW  (automatic after pulse)               │
+ *  │  Non-blocking — CPU free during pulse                   │
+ *  └─────────────────────────────────────────────────────────┘
+ *
+ *  PIN MAP:
+ *    GPIO 23  Injector output      (RMT TX — do NOT use digitalWrite)
+ *    GPIO 4   Pressure sensor      (ADC,  0.5–4.5 V via divider)
+ *    GPIO 16  Cam Proximity sensor (Interrupt RISING, INPUT_PULLUP)
+ *    GPIO 2   Status LED
+ *    GPIO 15  Buzzer               (active-HIGH, pull-down 10 kΩ)
+ *
+ *  SERIAL PROTOCOL @ 115200 baud:
+ *    PC → ESP32:
+ *      start          Start injection
+ *      stop           Stop injection
+ *      mode           Toggle Custom ↔ CamBox
+ *      w<200-3000>    Pulse width (µs)
+ *      f<1-100>       Frequency Hz  [Custom]
+ *      a<0-45>        Delay angle ° [CamBox]
+ *    ESP32 → PC:
+ *      P:<bar>,A:<°>,R:<rpm>,I:<inj_count>,C:<cam_count>  @ 10 ms
+ *
+ * ================================================================
+ */
 
-// ---- PINS ----
-#define INJECTOR_PIN      23
-#define PRESSURE_PIN      4
-#define CAMBOX_PIN        16
-#define STATUS_LED_PIN    2
-#define BUZZER_PIN        15
+#include "driver/rmt_tx.h"
 
-// ---- PRESSURE SENSOR CALIBRATION ----
-#define PRESSURE_V_MIN    1.0f      // فولت عند 0 BAR
-#define PRESSURE_V_MAX    4.5f      // فولت عند 1600 BAR
-#define PRESSURE_BAR_MAX  1600.0f   // أقصى ضغط
-#define PRESSURE_SAMPLES  32        // أكتر عينات = أنعم (non-blocking فمفيش مشكلة)
-#define RPM_EMA_ALPHA     0.15f     // فلتر RPM — 0=لا تغيير, 1=بدون فلتر
+// ── Pins ─────────────────────────────────────────────────────────────
+#define PIN_INJECTOR    23
+#define PIN_PRESSURE     4
+#define PIN_CAM         16
+#define PIN_LED          2
+#define PIN_BUZZER      15
 
-// ---- DEFAULTS ----
-#define DEFAULT_PW_US     1000      // Pulse Width افتراضي
-#define DEFAULT_DELAY_DEG 0         // Delay Angle افتراضي
-#define DEFAULT_FREQ_HZ   25        // تردد افتراضي للـ Custom Mode
+// ── Pressure sensor calibration ──────────────────────────────────────
+#define P_V_MIN         1.0f        // volt @ 0 BAR
+#define P_V_MAX         4.5f        // volt @ 1600 BAR
+#define P_BAR_MAX    1600.0f
+#define P_ADC_DIVIDER   1.364f      // voltage divider factor (4.5→3.3 V)
+#define P_SAMPLES         32        // background rolling ADC window
 
-// ---- TIMING ----
-#define TELEMETRY_MS      5         // إرسال Telemetry كل 5ms (200Hz)
-#define DEG_PER_REV       360.0f    // درجات اللفة الكاملة
-#define CAM_DEBOUNCE_US   5000UL    // 5ms debounce — يتجاهل النويز حتى 6000 RPM
+// ── Injection defaults ───────────────────────────────────────────────
+#define DEF_PW_US       1000        // µs
+#define DEF_DELAY_DEG      0        // degrees
+#define DEF_FREQ_HZ       25        // Hz
 
-// ============================================================
-//  GLOBALS
-// ============================================================
-volatile unsigned long  cam_pulse_time_us  = 0;   // وقت آخر إشارة كام
-volatile bool           cam_fired          = false;
-volatile unsigned long  last_cam_us        = 0;
-volatile unsigned long  rpm_period_us      = 0;   // الفترة بين إشارتين كام
+// ── Timing ───────────────────────────────────────────────────────────
+#define TELEMETRY_MS      10        // telemetry period
+#define DEG_FULL        360.0f
 
-bool           is_running      = false;
-int            pulse_width_us  = DEFAULT_PW_US;
-int            delay_angle_deg = DEFAULT_DELAY_DEG;
-int            freq_hz         = DEFAULT_FREQ_HZ;
-int            active_mode     = 0;      // 0=Custom, 1=CamBox
-bool           injector_armed  = false;  // هل تم تسليح الحقنة بعد الكام؟
-unsigned long  fire_at_us      = 0;      // الوقت المحسوب للإطلاق
-unsigned long  last_custom_fire_us = 0;  // آخر إطلاق في Custom Mode
+// ── RMT hardware pulse ────────────────────────────────────────────────
+#define RMT_RES_HZ   1000000UL      // 1 MHz → 1 µs per tick (max PW 32 ms)
 
-unsigned long  last_telemetry  = 0;
-String         serial_buffer   = "";
+// ── Cam debounce & plausibility ───────────────────────────────────────
+// Stage-1 — electrical debounce (EMI bursts arrive µs apart)
+#define CAM_DEBOUNCE_US     1000UL  // reject gaps < 1 ms
 
-unsigned long  beep_end_ms          = 0;
-int            injector_pulse_count = 0;
-volatile int   cambox_pulse_count   = 0;
+// Stage-2 — physical plausibility (max test-bench RPM)
+// At 8000 RPM: T_min = 60 000 000 / 8000 = 7 500 µs
+#define CAM_MAX_RPM           8000
+#define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
-// قراءة الضغط في الـ Background — نبضة ADC واحدة per loop بدون blocking
-float          g_pressure_bar = 0.0f;
-long           g_adc_sum      = 0;
-int            g_adc_count    = 0;
+// ── RPM rolling average ──────────────────────────────────────────────
+#define RPM_WINDOW            8     // periods to average
+#define RPM_STALE_US    2000000UL   // declare 0 RPM after 2 s silence
 
-// RPM مفلتر
-float          g_rpm_ema      = 0.0f;
-volatile bool  g_new_cam_rpm  = false;  // flag لما تيجي نبضة كام جديدة
+// ════════════════════════════════════════════════════════════════════
+//  RMT HANDLES
+// ════════════════════════════════════════════════════════════════════
+static rmt_channel_handle_t s_rmt_chan = NULL;
+static rmt_encoder_handle_t s_rmt_enc  = NULL;
 
-// ============================================================
-//  INTERRUPT - CamBox Pulse (RISING EDGE
-// ============================================================
+static rmt_transmit_config_t k_rmt_cfg;   // initialized in rmt_init()
+
+// ════════════════════════════════════════════════════════════════════
+//  CAM / RPM STATE  (written in ISR → volatile)
+// ════════════════════════════════════════════════════════════════════
+volatile unsigned long  s_cam_time_us  = 0;    // timestamp of last valid cam pulse
+volatile unsigned long  s_last_cam_us  = 0;    // for period calculation
+volatile unsigned long  s_rpm_period   = 0;    // most-recent period (µs)
+volatile bool           s_cam_fired    = false; // consumed by handle_cambox()
+volatile int            s_cam_telem    = 0;    // pulse count for telemetry
+
+volatile unsigned long  s_rpm_win[RPM_WINDOW]; // circular period buffer
+volatile int            s_rpm_wptr     = 0;
+volatile int            s_rpm_wcnt     = 0;
+
+// ════════════════════════════════════════════════════════════════════
+//  INJECTION STATE
+// ════════════════════════════════════════════════════════════════════
+bool           s_running        = false;
+int            s_pw_us          = DEF_PW_US;
+int            s_delay_deg      = DEF_DELAY_DEG;
+int            s_freq_hz        = DEF_FREQ_HZ;
+int            s_mode           = 0;            // 0=Custom  1=CamBox
+
+// CamBox armed shot
+bool           s_armed          = false;
+unsigned long  s_fire_at_us     = 0;
+
+// Custom mode last-fire reference
+unsigned long  s_last_fire_us   = 0;
+
+// ════════════════════════════════════════════════════════════════════
+//  TELEMETRY / SERIAL
+// ════════════════════════════════════════════════════════════════════
+unsigned long  s_telem_last     = 0;
+String         s_serial_buf     = "";
+int            s_inj_count      = 0;    // injections this telemetry period
+
+// ════════════════════════════════════════════════════════════════════
+//  PRESSURE  (background ADC — non-blocking)
+// ════════════════════════════════════════════════════════════════════
+float          s_pressure       = 0.0f;
+long           s_adc_sum        = 0;
+int            s_adc_cnt        = 0;
+
+// ════════════════════════════════════════════════════════════════════
+//  BUZZER  (non-blocking)
+// ════════════════════════════════════════════════════════════════════
+unsigned long  s_beep_end       = 0;
+
+// ════════════════════════════════════════════════════════════════════
+//  FORWARD DECLARATIONS
+// ════════════════════════════════════════════════════════════════════
+void rmt_init();
+void fire_injector();
+void handle_serial();
+void process_command(const String& cmd);
+void handle_custom();
+void handle_cambox();
+void update_pressure();
+void send_telemetry();
+void beep_start(int ms);
+void beep_update();
+
+// ════════════════════════════════════════════════════════════════════
+//  FIRE INJECTOR  —  hardware RMT pulse, zero CPU blocking
+// ════════════════════════════════════════════════════════════════════
+void fire_injector() {
+    static rmt_symbol_word_t sym;
+    sym.level0    = 1;
+    sym.duration0 = (uint16_t)s_pw_us;   // HIGH for s_pw_us µs
+    sym.level1    = 0;
+    sym.duration1 = 0;                    // end-marker → idle LOW
+
+    rmt_transmit(s_rmt_chan, s_rmt_enc,
+                 &sym, sizeof(sym), &k_rmt_cfg);
+    s_inj_count++;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  CAM ISR  —  IRAM, two-stage debounce
+// ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR cambox_isr() {
-  unsigned long now = micros();
-  if (now - last_cam_us < CAM_DEBOUNCE_US) return;  // تجاهل النويز
-  rpm_period_us     = now - last_cam_us;
-  last_cam_us       = now;
-  cam_pulse_time_us = now;
-  cam_fired         = true;
-  cambox_pulse_count++;
-  g_new_cam_rpm     = true;  // إشارة للـ main loop يحدّث الـ RPM
+    unsigned long now = micros();
+    unsigned long gap = now - s_last_cam_us;
+
+    // ── Stage 1: electrical debounce ─────────────────────────────────
+    //   Catches rapid EMI bursts from injector coil switching.
+    //   Any pulse arriving < 1 ms after the previous one is discarded.
+    if (gap < CAM_DEBOUNCE_US) return;
+
+    // ── Stage 2: physical plausibility ───────────────────────────────
+    //   If the implied RPM is above CAM_MAX_RPM the pulse is likely
+    //   noise (e.g. 50 Hz mains coupling or ringing on the wire).
+    if (gap < CAM_MIN_PERIOD_US) return;
+
+    // ── Valid pulse — update state ────────────────────────────────────
+    s_rpm_period  = gap;
+    s_cam_time_us = now;
+    s_last_cam_us = now;
+    s_cam_fired   = true;
+    s_cam_telem++;
+
+    // Rolling RPM buffer (circular, newest first)
+    s_rpm_win[s_rpm_wptr % RPM_WINDOW] = gap;
+    s_rpm_wptr++;
+    if (s_rpm_wcnt < RPM_WINDOW) s_rpm_wcnt++;
 }
 
-// ============================================================
-//  SETUP
-// ============================================================
-void setup() {
-  Serial.begin(115200);
+// ════════════════════════════════════════════════════════════════════
+//  RMT INIT
+// ════════════════════════════════════════════════════════════════════
+void rmt_init() {
+    // TX channel config
+    rmt_tx_channel_config_t ch_cfg;
+    memset(&ch_cfg, 0, sizeof(ch_cfg));
+    ch_cfg.gpio_num          = (gpio_num_t)PIN_INJECTOR;
+    ch_cfg.clk_src           = RMT_CLK_SRC_DEFAULT;
+    ch_cfg.resolution_hz     = RMT_RES_HZ;
+    ch_cfg.mem_block_symbols = 64;
+    ch_cfg.trans_queue_depth = 4;
 
-  pinMode(INJECTOR_PIN,   OUTPUT);
-  pinMode(STATUS_LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN,     OUTPUT);
-  pinMode(PRESSURE_PIN,   INPUT);
-  pinMode(CAMBOX_PIN,     INPUT_PULLUP);
-
-  digitalWrite(INJECTOR_PIN,   LOW);
-  digitalWrite(STATUS_LED_PIN, LOW);
-  digitalWrite(BUZZER_PIN,     LOW);
-
-  attachInterrupt(digitalPinToInterrupt(CAMBOX_PIN), cambox_isr, RISING);
-
-  Serial.println("INJECTOR PRO - Ready");
-}
-
-// ============================================================
-//  MAIN LOOP
-// ============================================================
-void loop() {
-
-  // 1. قراءة الأوامر القادمة من البرنامج
-  handle_serial();
-
-  // 2. منطق الإطلاق — أعلى أولوية
-  if (is_running) {
-    handle_injection();
-  }
-
-  // 3. قراءة ADC في الـ Background (نبضة واحدة per loop — بدون blocking)
-  update_pressure_bg();
-
-  // 4. إرسال Telemetry
-  unsigned long now = millis();
-  if (now - last_telemetry >= TELEMETRY_MS) {
-    send_telemetry();
-    last_telemetry = now;
-  }
-
-  // 5. إيقاف الـ buzzer
-  beep_update();
-}
-
-// ============================================================
-//  INJECTION LOGIC - يختار المنطق حسب الـ active_mode
-// ============================================================
-void handle_injection() {
-  if (active_mode == 0) {
-    handle_custom_mode();
-  } else {
-    handle_cambox_mode();
-  }
-}
-
-// ---- Custom Mode: حقن بتردد ثابت ----
-void handle_custom_mode() {
-  unsigned long now = micros();
-  unsigned long period_us = 1000000UL / (unsigned long)freq_hz;
-  if (now - last_custom_fire_us >= period_us) {
-    last_custom_fire_us = now;
-    fire_injector();
-  }
-}
-
-// ---- CamBox Mode: حقن مزامن مع إشارة الكام ----
-void handle_cambox_mode() {
-  if (cam_fired) {
-    cam_fired = false;
-
-    if (delay_angle_deg == 0) {
-      fire_injector();
-    } else {
-      if (rpm_period_us > 0) {
-        unsigned long delay_us = (unsigned long)(
-          ((float)delay_angle_deg / DEG_PER_REV) * (float)rpm_period_us
-        );
-        fire_at_us     = cam_pulse_time_us + delay_us;
-        injector_armed = true;
-      } else {
-        fire_injector();
-      }
+    esp_err_t err = rmt_new_tx_channel(&ch_cfg, &s_rmt_chan);
+    if (err != ESP_OK) {
+        Serial.printf("RMT channel error: %s\n", esp_err_to_name(err));
+        return;
     }
-  }
 
-  if (injector_armed && micros() >= fire_at_us) {
-    injector_armed = false;
-    fire_injector();
-  }
+    // Copy encoder
+    rmt_copy_encoder_config_t enc_cfg;
+    memset(&enc_cfg, 0, sizeof(enc_cfg));
+    err = rmt_new_copy_encoder(&enc_cfg, &s_rmt_enc);
+    if (err != ESP_OK) {
+        Serial.printf("RMT encoder error: %s\n", esp_err_to_name(err));
+        return;
+    }
+
+    err = rmt_enable(s_rmt_chan);
+    if (err != ESP_OK) {
+        Serial.printf("RMT enable error: %s\n", esp_err_to_name(err));
+        return;
+    }
+
+    // Transmit config — eot_level=0 → pin goes LOW after pulse
+    memset(&k_rmt_cfg, 0, sizeof(k_rmt_cfg));
+    k_rmt_cfg.loop_count        = 0;
+    k_rmt_cfg.flags.eot_level   = 0;
 }
 
-// ============================================================
-//  BUZZER BEEP - non-blocking, بيشغّل الـ buzzer في الـ loop
-// ============================================================
-void beep_start(int duration_ms = 60) {
-  digitalWrite(BUZZER_PIN, HIGH);
-  beep_end_ms = millis() + duration_ms;
+// ════════════════════════════════════════════════════════════════════
+//  SETUP
+// ════════════════════════════════════════════════════════════════════
+void setup() {
+    Serial.begin(115200);
+
+    // RMT owns PIN_INJECTOR — do NOT call pinMode on it
+    rmt_init();
+
+    pinMode(PIN_LED,      OUTPUT);
+    pinMode(PIN_BUZZER,   OUTPUT);
+    pinMode(PIN_PRESSURE, INPUT);
+    pinMode(PIN_CAM,      INPUT_PULLUP);
+
+    digitalWrite(PIN_LED,    LOW);
+    digitalWrite(PIN_BUZZER, LOW);
+
+    attachInterrupt(digitalPinToInterrupt(PIN_CAM), cambox_isr, RISING);
+
+    Serial.println("INJECTOR PRO - Ready");
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  MAIN LOOP  —  zero blocking, all operations return immediately
+// ════════════════════════════════════════════════════════════════════
+void loop() {
+    handle_serial();                   // 1. parse serial commands
+
+    if (s_running) {                   // 2. injection logic
+        if (s_mode == 0) handle_custom();
+        else             handle_cambox();
+    }
+
+    update_pressure();                 // 3. one ADC sample
+
+    unsigned long now_ms = millis();   // 4. telemetry
+    if (now_ms - s_telem_last >= TELEMETRY_MS) {
+        send_telemetry();
+        s_telem_last = now_ms;
+    }
+
+    beep_update();                     // 5. buzzer timeout
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  CUSTOM MODE  —  fixed-frequency injection
+// ════════════════════════════════════════════════════════════════════
+void handle_custom() {
+    unsigned long now    = micros();
+    unsigned long period = 1000000UL / (unsigned long)s_freq_hz;
+
+    if ((now - s_last_fire_us) >= period) {
+        s_last_fire_us = now;
+        fire_injector();
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  CAMBOX MODE  —  cam-synchronised injection with delay angle
+//
+//  Timing precision:
+//    The main loop runs in ~5–15 µs (no blocking).
+//    The armed-shot check fires within ±15 µs of the target.
+//    At 3000 RPM (T = 20 ms), 15 µs ≡ ±0.27° — well within spec.
+// ════════════════════════════════════════════════════════════════════
+void handle_cambox() {
+    // Consume cam event
+    if (s_cam_fired) {
+        s_cam_fired = false;
+
+        unsigned long delay_us = 0;
+
+        if (s_delay_deg > 0 && s_rpm_period > 0) {
+            // Convert angle to time using the most-recent revolution period
+            delay_us = (unsigned long)(
+                ((float)s_delay_deg / DEG_FULL) * (float)s_rpm_period
+            );
+        }
+
+        if (delay_us < 20UL) {
+            // Negligible delay — fire immediately
+            fire_injector();
+        } else {
+            // Arm the shot: fire at cam_time + delay
+            s_fire_at_us = s_cam_time_us + delay_us;
+            s_armed      = true;
+        }
+    }
+
+    // Armed-shot check — runs every loop iteration (~5–15 µs)
+    if (s_armed && (micros() >= s_fire_at_us)) {
+        s_armed = false;
+        fire_injector();
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  BACKGROUND PRESSURE  —  1 ADC read per loop iteration (no delay)
+// ════════════════════════════════════════════════════════════════════
+void update_pressure() {
+    s_adc_sum += analogRead(PIN_PRESSURE);
+    s_adc_cnt++;
+
+    if (s_adc_cnt >= P_SAMPLES) {
+        float avg  = (float)s_adc_sum / (float)s_adc_cnt;
+        float volt = (avg / 4095.0f) * 3.3f * P_ADC_DIVIDER;
+        float p    = ((volt - P_V_MIN) / (P_V_MAX - P_V_MIN)) * P_BAR_MAX;
+
+        s_pressure = constrain(p, 0.0f, P_BAR_MAX);
+        s_adc_sum  = 0;
+        s_adc_cnt  = 0;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  TELEMETRY — sent every TELEMETRY_MS
+//  Format: P:<bar>,A:<°>,R:<rpm>,I:<inj>,C:<cam>
+// ════════════════════════════════════════════════════════════════════
+void send_telemetry() {
+    // RPM from rolling average of last N periods
+    int rpm = 0;
+    unsigned long cam_age = micros() - (unsigned long)s_last_cam_us;
+
+    if (s_rpm_wcnt > 0 && cam_age < RPM_STALE_US) {
+        noInterrupts();
+        int           cnt = s_rpm_wcnt;
+        unsigned long sum = 0;
+        for (int i = 0; i < cnt; i++) sum += s_rpm_win[i];
+        interrupts();
+
+        unsigned long avg_period = sum / (unsigned long)cnt;
+        if (avg_period > 0) rpm = (int)(60000000UL / avg_period);
+    }
+
+    // Atomically snapshot and reset counters
+    noInterrupts();
+    int inj       = s_inj_count;  s_inj_count = 0;
+    int cam_pulses = s_cam_telem;  s_cam_telem = 0;
+    interrupts();
+
+    Serial.print("P:");  Serial.print(s_pressure, 1);
+    Serial.print(",A:"); Serial.print(s_delay_deg);
+    Serial.print(",R:"); Serial.print(rpm);
+    Serial.print(",I:"); Serial.print(inj);
+    Serial.print(",C:"); Serial.println(cam_pulses);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  SERIAL HANDLER
+// ════════════════════════════════════════════════════════════════════
+void handle_serial() {
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n') {
+            s_serial_buf.trim();
+            if (s_serial_buf.length() > 0) process_command(s_serial_buf);
+            s_serial_buf = "";
+        } else if (c != '\r') {
+            s_serial_buf += c;
+        }
+    }
+}
+
+void process_command(const String& cmd) {
+    beep_start(40);   // short confirmation beep
+
+    if (cmd == "start") {
+        s_running      = true;
+        s_armed        = false;
+        s_last_fire_us = 0;
+        digitalWrite(PIN_LED, HIGH);
+        Serial.println("OK:START");
+
+    } else if (cmd == "stop") {
+        s_running = false;
+        s_armed   = false;
+        // RMT pin goes LOW automatically after the current pulse ends
+        digitalWrite(PIN_LED, LOW);
+        Serial.println("OK:STOP");
+
+    } else if (cmd == "mode") {
+        s_mode = (s_mode == 0) ? 1 : 0;
+        s_armed      = false;
+        s_cam_fired  = false;
+        s_last_fire_us = 0;
+        Serial.print("OK:MODE:");
+        Serial.println(s_mode == 0 ? "CUSTOM" : "CAMBOX");
+
+    } else if (cmd.startsWith("w")) {
+        int v = cmd.substring(1).toInt();
+        if (v >= 200 && v <= 3000) {
+            s_pw_us = v;
+            Serial.print("OK:PW:"); Serial.println(s_pw_us);
+        } else {
+            Serial.println("ERR:PW_RANGE_200-3000");
+        }
+
+    } else if (cmd.startsWith("f")) {
+        int v = cmd.substring(1).toInt();
+        if (v >= 1 && v <= 100) {
+            s_freq_hz = v;
+            Serial.print("OK:FREQ:"); Serial.println(s_freq_hz);
+        } else {
+            Serial.println("ERR:FREQ_RANGE_1-100");
+        }
+
+    } else if (cmd.startsWith("a")) {
+        int v = cmd.substring(1).toInt();
+        if (v >= 0 && v <= 45) {
+            s_delay_deg = v;
+            Serial.print("OK:ANGLE:"); Serial.println(s_delay_deg);
+        } else {
+            Serial.println("ERR:ANGLE_RANGE_0-45");
+        }
+
+    } else {
+        Serial.print("ERR:UNKNOWN:"); Serial.println(cmd);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  BUZZER  —  non-blocking, duration-based
+// ════════════════════════════════════════════════════════════════════
+void beep_start(int ms) {
+    digitalWrite(PIN_BUZZER, HIGH);
+    s_beep_end = millis() + (unsigned long)ms;
 }
 
 void beep_update() {
-  if (beep_end_ms > 0 && millis() >= beep_end_ms) {
-    digitalWrite(BUZZER_PIN, LOW);
-    beep_end_ms = 0;
-  }
-}
-
-// ============================================================
-//  FIRE INJECTOR
-// ============================================================
-void fire_injector() {
-  digitalWrite(INJECTOR_PIN, HIGH);
-  delayMicroseconds(pulse_width_us);
-  digitalWrite(INJECTOR_PIN, LOW);
-  injector_pulse_count++;
-}
-
-// ============================================================
-//  SERIAL COMMAND HANDLER
-// ============================================================
-void handle_serial() {
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\n') {
-      serial_buffer.trim();
-      process_command(serial_buffer);
-      serial_buffer = "";
-    } else {
-      serial_buffer += c;
+    if (s_beep_end > 0 && millis() >= s_beep_end) {
+        digitalWrite(PIN_BUZZER, LOW);
+        s_beep_end = 0;
     }
-  }
-}
-
-void process_command(String cmd) {
-  if (cmd.length() == 0) return;
-
-  beep_start();  // بيب عند كل أمر وارد
-
-  if (cmd == "start") {
-    is_running     = true;
-    injector_armed = false;
-    digitalWrite(STATUS_LED_PIN, HIGH);
-    Serial.println("OK:START");
-
-  } else if (cmd == "stop") {
-    is_running     = false;
-    injector_armed = false;
-    digitalWrite(INJECTOR_PIN,   LOW);
-    digitalWrite(STATUS_LED_PIN, LOW);
-    Serial.println("OK:STOP");
-
-  } else if (cmd.startsWith("w")) {
-    // Pulse Width
-    int val = cmd.substring(1).toInt();
-    if (val >= 200 && val <= 3000) {
-      pulse_width_us = val;
-      Serial.print("OK:PW:");
-      Serial.println(pulse_width_us);
-    } else {
-      Serial.println("ERR:PW_OUT_OF_RANGE");
-    }
-
-  } else if (cmd.startsWith("a")) {
-    // Delay Angle
-    int val = cmd.substring(1).toInt();
-    if (val >= 0 && val <= 45) {
-      delay_angle_deg = val;
-      Serial.print("OK:ANGLE:");
-      Serial.println(delay_angle_deg);
-    } else {
-      Serial.println("ERR:ANGLE_OUT_OF_RANGE");
-    }
-
-  } else if (cmd.startsWith("f")) {
-    // Frequency (Custom Mode)
-    int val = cmd.substring(1).toInt();
-    if (val >= 1 && val <= 100) {
-      freq_hz = val;
-      Serial.print("OK:FREQ:");
-      Serial.println(freq_hz);
-    } else {
-      Serial.println("ERR:FREQ_OUT_OF_RANGE");
-    }
-
-  } else if (cmd == "mode") {
-    // تبديل الوضع
-    active_mode    = (active_mode == 0) ? 1 : 0;
-    injector_armed = false;
-    cam_fired      = false;
-    last_custom_fire_us = 0;
-    Serial.print("OK:MODE:");
-    Serial.println(active_mode == 0 ? "CUSTOM" : "CAMBOX");
-
-  } else if (cmd.length() > 0) {
-    Serial.print("ERR:UNKNOWN:");
-    Serial.println(cmd);
-  }
-}
-
-// ============================================================
-//  PRESSURE — قراءة في الـ Background (نبضة واحدة per loop)
-// ============================================================
-void update_pressure_bg() {
-  g_adc_sum += analogRead(PRESSURE_PIN);
-  g_adc_count++;
-  if (g_adc_count >= PRESSURE_SAMPLES) {
-    float avg  = (float)g_adc_sum / PRESSURE_SAMPLES;
-    float volt = (avg / 4095.0f) * 3.3f * 1.364f;
-    float p    = ((volt - PRESSURE_V_MIN) / (PRESSURE_V_MAX - PRESSURE_V_MIN)) * PRESSURE_BAR_MAX;
-    if (p < 0.0f)             p = 0.0f;
-    if (p > PRESSURE_BAR_MAX) p = PRESSURE_BAR_MAX;
-    g_pressure_bar = p;
-    g_adc_sum   = 0;
-    g_adc_count = 0;
-  }
-}
-
-// ============================================================
-//  SEND TELEMETRY TO PC
-//  Format: P:<pressure>,A:<angle>
-// ============================================================
-void send_telemetry() {
-  // الضغط جاهز من الـ background — مفيش blocking هنا
-  float pressure = g_pressure_bar;
-
-  // RPM — يتحدث بس لما تيجي نبضة جديدة (مش كل 5ms)
-  unsigned long cam_age_us = micros() - last_cam_us;
-  if (cam_age_us >= 2000000UL) {
-    // الكام وقف من أكتر من 2 ثانية
-    g_rpm_ema     = 0.0f;
-    g_new_cam_rpm = false;
-  } else if (g_new_cam_rpm && rpm_period_us > 0) {
-    // نبضة جديدة وصلت — حدّث الـ EMA
-    g_new_cam_rpm = false;
-    float raw_rpm = 60000000.0f / (float)rpm_period_us;
-    g_rpm_ema = RPM_EMA_ALPHA * raw_rpm + (1.0f - RPM_EMA_ALPHA) * g_rpm_ema;
-  }
-  int rpm = (int)g_rpm_ema;
-
-  // قراءة العدادات مع حماية من الـ ISR
-  noInterrupts();
-  int inj_pulses = injector_pulse_count;  injector_pulse_count = 0;
-  int cam_pulses = cambox_pulse_count;    cambox_pulse_count   = 0;
-  interrupts();
-
-  Serial.print("P:");  Serial.print(pressure, 1);
-  Serial.print(",A:"); Serial.print(delay_angle_deg);
-  Serial.print(",R:"); Serial.print(rpm);
-  Serial.print(",I:"); Serial.print(inj_pulses);
-  Serial.print(",C:"); Serial.println(cam_pulses);
 }
