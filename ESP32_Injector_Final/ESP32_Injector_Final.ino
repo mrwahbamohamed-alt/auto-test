@@ -30,7 +30,7 @@
 //    a<val>\n     = Delay Angle بالدرجات (0-45) [CamBox Mode]
 //
 //  ESP32 --> PC:
-//    P:<pressure>,A:<angle>\n  كل 100ms
+//    P:<pressure>,A:<angle>,R:<rpm>,I:<inj_count>,C:<cam_count>\n  كل 5ms
 // ============================================================
 
 // ---- PINS ----
@@ -44,7 +44,8 @@
 #define PRESSURE_V_MIN    1.0f      // فولت عند 0 BAR
 #define PRESSURE_V_MAX    4.5f      // فولت عند 1600 BAR
 #define PRESSURE_BAR_MAX  1600.0f   // أقصى ضغط
-#define PRESSURE_SAMPLES  16        // عدد القراءات للمتوسط
+#define PRESSURE_SAMPLES  32        // أكتر عينات = أنعم (non-blocking فمفيش مشكلة)
+#define RPM_EMA_ALPHA     0.15f     // فلتر RPM — 0=لا تغيير, 1=بدون فلتر
 
 // ---- DEFAULTS ----
 #define DEFAULT_PW_US     1000      // Pulse Width افتراضي
@@ -52,8 +53,9 @@
 #define DEFAULT_FREQ_HZ   25        // تردد افتراضي للـ Custom Mode
 
 // ---- TIMING ----
-#define TELEMETRY_MS      100       // إرسال Telemetry كل 100ms
+#define TELEMETRY_MS      5         // إرسال Telemetry كل 5ms (200Hz)
 #define DEG_PER_REV       360.0f    // درجات اللفة الكاملة
+#define CAM_DEBOUNCE_US   5000UL    // 5ms debounce — يتجاهل النويز حتى 6000 RPM
 
 // ============================================================
 //  GLOBALS
@@ -75,17 +77,31 @@ unsigned long  last_custom_fire_us = 0;  // آخر إطلاق في Custom Mode
 unsigned long  last_telemetry  = 0;
 String         serial_buffer   = "";
 
-unsigned long  beep_end_ms     = 0;  // وقت انتهاء الـ beep
+unsigned long  beep_end_ms          = 0;
+int            injector_pulse_count = 0;
+volatile int   cambox_pulse_count   = 0;
+
+// قراءة الضغط في الـ Background — نبضة ADC واحدة per loop بدون blocking
+float          g_pressure_bar = 0.0f;
+long           g_adc_sum      = 0;
+int            g_adc_count    = 0;
+
+// RPM مفلتر
+float          g_rpm_ema      = 0.0f;
+volatile bool  g_new_cam_rpm  = false;  // flag لما تيجي نبضة كام جديدة
 
 // ============================================================
 //  INTERRUPT - CamBox Pulse (RISING EDGE
 // ============================================================
 void IRAM_ATTR cambox_isr() {
   unsigned long now = micros();
-  rpm_period_us    = now - last_cam_us;  // حساب الفترة = قياس RPM
-  last_cam_us      = now;
+  if (now - last_cam_us < CAM_DEBOUNCE_US) return;  // تجاهل النويز
+  rpm_period_us     = now - last_cam_us;
+  last_cam_us       = now;
   cam_pulse_time_us = now;
-  cam_fired        = true;
+  cam_fired         = true;
+  cambox_pulse_count++;
+  g_new_cam_rpm     = true;  // إشارة للـ main loop يحدّث الـ RPM
 }
 
 // ============================================================
@@ -117,19 +133,22 @@ void loop() {
   // 1. قراءة الأوامر القادمة من البرنامج
   handle_serial();
 
-  // 2. منطق الإطلاق
+  // 2. منطق الإطلاق — أعلى أولوية
   if (is_running) {
     handle_injection();
   }
 
-  // 3. إرسال Telemetry كل 100ms
+  // 3. قراءة ADC في الـ Background (نبضة واحدة per loop — بدون blocking)
+  update_pressure_bg();
+
+  // 4. إرسال Telemetry
   unsigned long now = millis();
   if (now - last_telemetry >= TELEMETRY_MS) {
     send_telemetry();
     last_telemetry = now;
   }
 
-  // 4. إيقاف الـ buzzer لما ينتهي وقته
+  // 5. إيقاف الـ buzzer
   beep_update();
 }
 
@@ -202,6 +221,7 @@ void fire_injector() {
   digitalWrite(INJECTOR_PIN, HIGH);
   delayMicroseconds(pulse_width_us);
   digitalWrite(INJECTOR_PIN, LOW);
+  injector_pulse_count++;
 }
 
 // ============================================================
@@ -287,34 +307,21 @@ void process_command(String cmd) {
 }
 
 // ============================================================
-//  PRESSURE SENSOR
-//  0 BAR  = 1.0V
-//  1600 BAR = 4.5V
-//  ESP32 ADC: 0-3.3V / 12-bit (0-4095)
-//  ملاحظة: لو السنسور بيوصل 4.5V استخدم voltage divider
-//  عشان تحميه من الـ 3.3V المسموح بيها على ESP32
+//  PRESSURE — قراءة في الـ Background (نبضة واحدة per loop)
 // ============================================================
-float read_pressure_bar() {
-  long adc_sum = 0;
-  for (int i = 0; i < PRESSURE_SAMPLES; i++) {
-    adc_sum += analogRead(PRESSURE_PIN);
-    delayMicroseconds(50);
+void update_pressure_bg() {
+  g_adc_sum += analogRead(PRESSURE_PIN);
+  g_adc_count++;
+  if (g_adc_count >= PRESSURE_SAMPLES) {
+    float avg  = (float)g_adc_sum / PRESSURE_SAMPLES;
+    float volt = (avg / 4095.0f) * 3.3f * 1.364f;
+    float p    = ((volt - PRESSURE_V_MIN) / (PRESSURE_V_MAX - PRESSURE_V_MIN)) * PRESSURE_BAR_MAX;
+    if (p < 0.0f)             p = 0.0f;
+    if (p > PRESSURE_BAR_MAX) p = PRESSURE_BAR_MAX;
+    g_pressure_bar = p;
+    g_adc_sum   = 0;
+    g_adc_count = 0;
   }
-  float adc_avg = (float)adc_sum / PRESSURE_SAMPLES;
-
-  // تحويل ADC لفولت (مع مراعاة الـ voltage divider لو موجود)
-  // لو عندك voltage divider 4.5V -> 3.3V اضرب في 1.364
-  float voltage = (adc_avg / 4095.0f) * 3.3f * 1.364f;
-
-  // تحويل فولت لـ BAR
-  float pressure = ((voltage - PRESSURE_V_MIN) /
-                    (PRESSURE_V_MAX - PRESSURE_V_MIN)) * PRESSURE_BAR_MAX;
-
-  // تحديد الحدود
-  if (pressure < 0.0f)            pressure = 0.0f;
-  if (pressure > PRESSURE_BAR_MAX) pressure = PRESSURE_BAR_MAX;
-
-  return pressure;
 }
 
 // ============================================================
@@ -322,13 +329,32 @@ float read_pressure_bar() {
 //  Format: P:<pressure>,A:<angle>
 // ============================================================
 void send_telemetry() {
-  float pressure = read_pressure_bar();
+  // الضغط جاهز من الـ background — مفيش blocking هنا
+  float pressure = g_pressure_bar;
 
-  // حساب RPM من فترة الكام (اختياري للعرض)
-  // int rpm = (rpm_period_us > 0) ? (60000000UL / rpm_period_us) : 0;
+  // RPM — يتحدث بس لما تيجي نبضة جديدة (مش كل 5ms)
+  unsigned long cam_age_us = micros() - last_cam_us;
+  if (cam_age_us >= 2000000UL) {
+    // الكام وقف من أكتر من 2 ثانية
+    g_rpm_ema     = 0.0f;
+    g_new_cam_rpm = false;
+  } else if (g_new_cam_rpm && rpm_period_us > 0) {
+    // نبضة جديدة وصلت — حدّث الـ EMA
+    g_new_cam_rpm = false;
+    float raw_rpm = 60000000.0f / (float)rpm_period_us;
+    g_rpm_ema = RPM_EMA_ALPHA * raw_rpm + (1.0f - RPM_EMA_ALPHA) * g_rpm_ema;
+  }
+  int rpm = (int)g_rpm_ema;
 
-  Serial.print("P:");
-  Serial.print(pressure, 1);
-  Serial.print(",A:");
-  Serial.println(delay_angle_deg);
+  // قراءة العدادات مع حماية من الـ ISR
+  noInterrupts();
+  int inj_pulses = injector_pulse_count;  injector_pulse_count = 0;
+  int cam_pulses = cambox_pulse_count;    cambox_pulse_count   = 0;
+  interrupts();
+
+  Serial.print("P:");  Serial.print(pressure, 1);
+  Serial.print(",A:"); Serial.print(delay_angle_deg);
+  Serial.print(",R:"); Serial.print(rpm);
+  Serial.print(",I:"); Serial.print(inj_pulses);
+  Serial.print(",C:"); Serial.println(cam_pulses);
 }
