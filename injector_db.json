@@ -1,0 +1,561 @@
+{
+  "version": "2.2",
+  "notes": "Real-world Common Rail injector test parameters. rail_bar = target rail pressure.",
+  "cambox_profiles": {
+    "Cranking": {
+      "rpm": 200,
+      "pulse_us": 150,
+      "freq_hz": 2,
+      "duration_s": 30,
+      "delay_deg": 0
+    },
+    "Idle": {
+      "rpm": 800,
+      "pulse_us": 200,
+      "freq_hz": 3,
+      "duration_s": 60,
+      "delay_deg": 3
+    },
+    "Diagnostic": {
+      "rpm": 1200,
+      "pulse_us": 300,
+      "freq_hz": 6,
+      "duration_s": 60,
+      "delay_deg": 5
+    },
+    "Performance Test": {
+      "rpm": 2500,
+      "pulse_us": 500,
+      "freq_hz": 10,
+      "duration_s": 60,
+      "delay_deg": 8
+    }
+  },
+  "profiles": [
+    {
+      "id": "BOSCH_CRI_1600_2000",
+      "brand": "Bosch",
+      "model": "MAN",
+      "type": "Common Rail Solenoid",
+      "engine": "MAN",
+      "notes": "Bosch CRI — VW/Audi/BMW/Mercedes 1.6-2.0 TDI",
+      "safety": {
+        "max_pulse_us": 3000,
+        "max_freq_hz": 60,
+        "max_rpm": 3000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 250,
+          "pulse_us": 220,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 2.0,
+          "vol_target": 2.5,
+          "vol_max": 3.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 750,
+          "pulse_us": 350,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1500,
+          "vol_min": 7.5,
+          "vol_target": 9.0,
+          "vol_max": 10.5,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1350,
+          "pulse_us": 500,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 3000,
+          "vol_min": 17.0,
+          "vol_target": 19.5,
+          "vol_max": 22.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 750,
+          "pulse_us": 350,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1500,
+          "vol_min": 7.5,
+          "vol_target": 9.0,
+          "vol_max": 10.5,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "DELPHI_1500_2200",
+      "brand": "Delphi",
+      "model": "DFI 1.5–2.2 Diesel",
+      "type": "Common Rail Solenoid",
+      "engine": "1.5 – 2.2 Diesel",
+      "notes": "Delphi DFI — GM Opel, Ford, Fiat, Alfa Romeo",
+      "safety": {
+        "max_pulse_us": 800,
+        "max_freq_hz": 15,
+        "max_rpm": 3000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 220,
+          "pulse_us": 180,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 1.5,
+          "vol_target": 2.0,
+          "vol_max": 2.5,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 650,
+          "pulse_us": 280,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1500,
+          "vol_min": 6.5,
+          "vol_target": 8.0,
+          "vol_max": 9.5,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1300,
+          "pulse_us": 420,
+          "freq_hz": 9,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2700,
+          "vol_min": 15.0,
+          "vol_target": 17.5,
+          "vol_max": 20.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.5,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 650,
+          "pulse_us": 280,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 4,
+          "rpm": 1500,
+          "vol_min": 6.5,
+          "vol_target": 8.0,
+          "vol_max": 9.5,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "DENSO_TOYOTA_DIESEL",
+      "brand": "Denso",
+      "model": "HP — Toyota Diesel",
+      "type": "Common Rail Solenoid",
+      "engine": "Toyota Diesel (Hilux, Land Cruiser, RAV4)",
+      "notes": "Denso HP series — Toyota diesel range",
+      "safety": {
+        "max_pulse_us": 900,
+        "max_freq_hz": 15,
+        "max_rpm": 3500
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 260,
+          "pulse_us": 210,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 2.0,
+          "vol_target": 2.8,
+          "vol_max": 3.5,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 800,
+          "pulse_us": 320,
+          "freq_hz": 6,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1800,
+          "vol_min": 8.0,
+          "vol_target": 10.0,
+          "vol_max": 12.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1500,
+          "pulse_us": 480,
+          "freq_hz": 11,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 3300,
+          "vol_min": 18.0,
+          "vol_target": 21.0,
+          "vol_max": 24.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 800,
+          "pulse_us": 320,
+          "freq_hz": 6,
+          "duration_s": 120,
+          "delay_deg": 4,
+          "rpm": 1800,
+          "vol_min": 8.0,
+          "vol_target": 10.0,
+          "vol_max": 12.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "SIEMENS_VDO_VAG",
+      "brand": "Siemens",
+      "model": "VDO — VAG Diesel",
+      "type": "Common Rail Solenoid",
+      "engine": "VAG Diesel (VW, Audi, Seat, Skoda)",
+      "notes": "Siemens/Continental VDO — VAG group diesel engines",
+      "safety": {
+        "max_pulse_us": 800,
+        "max_freq_hz": 15,
+        "max_rpm": 3000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 240,
+          "pulse_us": 190,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 1.8,
+          "vol_target": 2.2,
+          "vol_max": 2.8,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 720,
+          "pulse_us": 290,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1500,
+          "vol_min": 7.0,
+          "vol_target": 8.5,
+          "vol_max": 10.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1400,
+          "pulse_us": 430,
+          "freq_hz": 9,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2700,
+          "vol_min": 16.0,
+          "vol_target": 18.5,
+          "vol_max": 21.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 720,
+          "pulse_us": 290,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1500,
+          "vol_min": 7.0,
+          "vol_target": 8.5,
+          "vol_max": 10.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "IVECO_EUI_500339059",
+      "brand": "EUI Iveco",
+      "model": "EUI 500339059",
+      "type": "Electronic Unit Injector (EUI)",
+      "engine": "Cursor 8 / Daily 2.3 HPI",
+      "notes": "Iveco EUI — CamBox mode required. Values per 1000 pulses (raw spec ×10).",
+      "safety": {
+        "max_pulse_us": 2800,
+        "max_freq_hz": 12,
+        "max_rpm": 1000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 350,
+          "pulse_us": 1200,
+          "freq_hz": 3,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 350,
+          "vol_min": 17.0,
+          "vol_target": 25.0,
+          "vol_max": 33.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 500,
+          "pulse_us": 1600,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 500,
+          "vol_min": 43.0,
+          "vol_target": 55.0,
+          "vol_max": 67.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 900,
+          "pulse_us": 2700,
+          "freq_hz": 9,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 900,
+          "vol_min": 180.0,
+          "vol_target": 200.0,
+          "vol_max": 220.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 1.5,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 700,
+          "pulse_us": 2200,
+          "freq_hz": 7,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 700,
+          "vol_min": 105.0,
+          "vol_target": 120.0,
+          "vol_max": 135.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "CAT_C15",
+      "brand": "EUI CAT",
+      "model": "EUI C15",
+      "type": "1",
+      "engine": "6L",
+      "notes": "",
+      "safety": {
+        "max_pulse_us": 2800,
+        "max_freq_hz": 0,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 5,
+          "pulse_us": 1200,
+          "freq_hz": 0,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 350,
+          "vol_min": 15.0,
+          "vol_target": 13.0,
+          "vol_max": 10.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 5,
+          "pulse_us": 1100,
+          "freq_hz": 0,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 600,
+          "vol_min": 0.015,
+          "vol_target": 20.0,
+          "vol_max": 25.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 5,
+          "pulse_us": 2400,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 900,
+          "vol_min": 35.0,
+          "vol_target": 30.0,
+          "vol_max": 25.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 10,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 550,
+          "vol_min": 1.0,
+          "vol_target": 0.0,
+          "vol_max": 0.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 5,
+          "pulse_us": 2800,
+          "freq_hz": 0,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1100,
+          "vol_min": 170.0,
+          "vol_target": 180.0,
+          "vol_max": 200.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "CAT_EUI_C13",
+      "brand": "EUI CAT",
+      "model": "EUI C13",
+      "type": "2",
+      "engine": "6L",
+      "notes": "",
+      "safety": {
+        "max_pulse_us": 2800,
+        "max_freq_hz": 0,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 5,
+          "pulse_us": 900,
+          "freq_hz": 0,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 300,
+          "vol_min": 15.0,
+          "vol_target": 20.0,
+          "vol_max": 25.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 5,
+          "pulse_us": 1200,
+          "freq_hz": 0,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 500,
+          "vol_min": 30.0,
+          "vol_target": 35.0,
+          "vol_max": 40.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 5,
+          "pulse_us": 2200,
+          "freq_hz": 0,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 90.0,
+          "vol_target": 100.0,
+          "vol_max": 120.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 5,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 500,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 5,
+          "pulse_us": 2500,
+          "freq_hz": 0,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 950,
+          "vol_min": 155.0,
+          "vol_target": 180.0,
+          "vol_max": 200.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    }
+  ]
+}

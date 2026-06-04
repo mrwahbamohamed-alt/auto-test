@@ -7,7 +7,7 @@
  *  ARCHITECTURE:
  *  ┌─────────────────────────────────────────────────────────┐
  *  │  CAM ISR  (IRAM_ATTR, RISING)                          │
- *  │   Stage-1 debounce  → rejects EMI bursts  < 1 ms       │
+ *  │   Stage-1 debounce  → rejects EMI bursts  < 5 ms       │
  *  │   Stage-2 plausibility → rejects > 8000 RPM pulses     │
  *  │   Rolling RPM window  → stores last 8 periods           │
  *  │   Sets s_cam_fired flag (main loop reads)               │
@@ -62,12 +62,9 @@
 #define PIN_LED          2
 #define PIN_BUZZER      15
 
-// ── Pressure sensor calibration ──────────────────────────────────────
-#define P_V_MIN         1.0f        // volt @ 0 BAR
-#define P_V_MAX         4.5f        // volt @ 1600 BAR
-#define P_BAR_MAX    1600.0f
-#define P_ADC_DIVIDER   1.364f      // voltage divider factor (4.5→3.3 V)
-#define P_SAMPLES         32        // background rolling ADC window
+// ── Pressure ADC ─────────────────────────────────────────────────────
+//   ESP32 sends raw averaged VX4 mV — all calibration done in Python
+#define P_SAMPLES  256              // rolling ADC window (256 samples ≈ max stability)
 
 // ── Injection defaults ───────────────────────────────────────────────
 #define DEF_PW_US       1000        // µs
@@ -83,7 +80,7 @@
 
 // ── Cam debounce & plausibility ───────────────────────────────────────
 // Stage-1 — electrical debounce (EMI bursts arrive µs apart)
-#define CAM_DEBOUNCE_US     1000UL  // reject gaps < 1 ms
+#define CAM_DEBOUNCE_US     5000UL  // reject gaps < 5 ms (MOSFET/injector EMI)
 
 // Stage-2 — physical plausibility (max test-bench RPM)
 // At 8000 RPM: T_min = 60 000 000 / 8000 = 7 500 µs
@@ -260,13 +257,18 @@ void setup() {
 
     pinMode(PIN_LED,      OUTPUT);
     pinMode(PIN_BUZZER,   OUTPUT);
-    pinMode(PIN_PRESSURE, INPUT);
     pinMode(PIN_CAM,      INPUT_PULLUP);
+
+    // GPIO4 (ADC2 CH0) — global attenuation + resolution for reliable reading
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);   // global: covers ADC2 pins unlike per-pin call
+    pinMode(PIN_PRESSURE, INPUT);
 
     digitalWrite(PIN_LED,    LOW);
     digitalWrite(PIN_BUZZER, LOW);
 
-    attachInterrupt(digitalPinToInterrupt(PIN_CAM), cambox_isr, RISING);
+    // CAM interrupt starts DETACHED — default mode is Custom (s_mode=0)
+    // attachInterrupt is called only when user switches to CamBox mode
 
     Serial.println("INJECTOR PRO - Ready");
 }
@@ -287,7 +289,7 @@ void loop() {
     unsigned long now_ms = millis();   // 4. telemetry
     if (now_ms - s_telem_last >= TELEMETRY_MS) {
         send_telemetry();
-        s_telem_last = now_ms;
+        s_telem_last += TELEMETRY_MS;   // += keeps interval precise (no drift)
     }
 
     beep_update();                     // 5. buzzer timeout
@@ -349,15 +351,12 @@ void handle_cambox() {
 //  BACKGROUND PRESSURE  —  1 ADC read per loop iteration (no delay)
 // ════════════════════════════════════════════════════════════════════
 void update_pressure() {
-    s_adc_sum += analogRead(PIN_PRESSURE);
+    s_adc_sum += analogReadMilliVolts(PIN_PRESSURE);
     s_adc_cnt++;
 
     if (s_adc_cnt >= P_SAMPLES) {
-        float avg  = (float)s_adc_sum / (float)s_adc_cnt;
-        float volt = (avg / 4095.0f) * 3.3f * P_ADC_DIVIDER;
-        float p    = ((volt - P_V_MIN) / (P_V_MAX - P_V_MIN)) * P_BAR_MAX;
-
-        s_pressure = constrain(p, 0.0f, P_BAR_MAX);
+        // Send raw averaged VX4 mV — Python applies EMA + BAR formula
+        s_pressure = (float)s_adc_sum / (float)s_adc_cnt;
         s_adc_sum  = 0;
         s_adc_cnt  = 0;
     }
@@ -431,9 +430,26 @@ void process_command(const String& cmd) {
 
     } else if (cmd == "mode") {
         s_mode = (s_mode == 0) ? 1 : 0;
-        s_armed      = false;
-        s_cam_fired  = false;
+        s_armed        = false;
+        s_cam_fired    = false;
         s_last_fire_us = 0;
+
+        if (s_mode == 0) {
+            // ── Custom: detach CAM interrupt, zero all RPM state ──────
+            detachInterrupt(digitalPinToInterrupt(PIN_CAM));
+            noInterrupts();
+            s_rpm_wcnt    = 0;
+            s_rpm_wptr    = 0;
+            s_rpm_period  = 0;
+            s_cam_telem   = 0;
+            s_cam_fired   = false;
+            s_last_cam_us = 0;
+            interrupts();
+        } else {
+            // ── CamBox: re-attach CAM interrupt ───────────────────────
+            attachInterrupt(digitalPinToInterrupt(PIN_CAM), cambox_isr, RISING);
+        }
+
         Serial.print("OK:MODE:");
         Serial.println(s_mode == 0 ? "CUSTOM" : "CAMBOX");
 
