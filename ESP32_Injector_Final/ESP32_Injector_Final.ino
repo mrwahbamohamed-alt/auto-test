@@ -12,9 +12,11 @@
  *  ARCHITECTURE:
  *  ┌─────────────────────────────────────────────────────────┐
  *  │  CAM ISR  (IRAM_ATTR, RISING)                          │
+ *  │   First edge → just seed timestamp (no period yet)     │
  *  │   Stage-1 debounce  → rejects EMI bursts  < 5 ms       │
  *  │   Stage-2 plausibility → rejects > 8000 RPM pulses     │
- *  │   Rolling RPM window  → median of last RPM_WINDOW gaps           │
+ *  │   Stage-3 rate-of-change → rejects only short gaps      │
+ *  │   Rolling RPM window  → median of last RPM_WINDOW gaps  │
  *  │   Sets s_cam_fired flag (main loop reads)               │
  *  └──────────────────────────┬──────────────────────────────┘
  *                             │ flag
@@ -306,7 +308,9 @@ void loop() {
     unsigned long now_ms = millis();
     if (now_ms - s_telem_last >= TELEMETRY_MS) {
         send_telemetry();
-        s_telem_last += TELEMETRY_MS;
+        // Reset to now (not += TELEMETRY_MS): after a loop stall this avoids
+        // a back-to-back telemetry burst while "catching up" the schedule.
+        s_telem_last = now_ms;
     }
 
     beep_update();
