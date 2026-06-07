@@ -1,5 +1,5 @@
 ('C:\\Users\\LAPIX\\OneDrive\\Desktop\\Diesel '
- 'Dashboard\\build\\auto_test\\PYZ-00.pyz',
+ 'Dashboard\\build\\campro\\PYZ-00.pyz',
  [('PyQt6',
    'C:\\Users\\LAPIX\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyQt6\\__init__.py',
    'PYMODULE'),
@@ -1763,6 +1763,9 @@
    'PYMODULE'),
   ('urllib.response',
    'C:\\Users\\LAPIX\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\urllib\\response.py',
+   'PYMODULE'),
+  ('uuid',
+   'C:\\Users\\LAPIX\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\uuid.py',
    'PYMODULE'),
   ('webbrowser',
    'C:\\Users\\LAPIX\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\webbrowser.py',

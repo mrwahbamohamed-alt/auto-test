@@ -556,6 +556,81 @@
           "vol_unit": "ml/1000"
         }
       }
+    },
+    {
+      "id": "BOSCH_0445_120_007",
+      "brand": "Bosch",
+      "model": "0445 120 007",
+      "type": "common Rail",
+      "engine": "6",
+      "notes": "",
+      "safety": {
+        "max_pulse_us": 2000,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 250,
+          "pulse_us": 500,
+          "freq_hz": 0,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 30.0,
+          "vol_target": 40.0,
+          "vol_max": 50.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 750,
+          "pulse_us": 350,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1500,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 15.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1350,
+          "pulse_us": 500,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 3000,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 25.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 750,
+          "pulse_us": 350,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1500,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 15.0,
+          "vol_unit": "ml/1000"
+        }
+      }
     }
   ]
 }

@@ -54,6 +54,7 @@
  */
 
 #include "driver/rmt_tx.h"
+#include "injector_driver.h"        // Peak & Hold — Common Rail
 
 // ── Pins ─────────────────────────────────────────────────────────────
 #define PIN_INJECTOR    23
@@ -88,7 +89,7 @@
 #define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
 // ── RPM rolling average ──────────────────────────────────────────────
-#define RPM_WINDOW            8     // periods to average
+#define RPM_WINDOW           20     // median window — larger = more robust to EMI
 #define RPM_STALE_US    2000000UL   // declare 0 RPM after 2 s silence
 
 // ════════════════════════════════════════════════════════════════════
@@ -162,9 +163,16 @@ void beep_start(int ms);
 void beep_update();
 
 // ════════════════════════════════════════════════════════════════════
-//  FIRE INJECTOR  —  hardware RMT pulse, zero CPU blocking
+//  FIRE INJECTOR  —  dispatches to P&H (Common Rail) or RMT (CamBox)
 // ════════════════════════════════════════════════════════════════════
 void fire_injector() {
+    // ── Common-Rail Peak & Hold path ──────────────────────────────────
+    if (g_use_peak_hold) {
+        fire_common_rail((uint32_t)s_pw_us);
+        s_inj_count++;
+        return;
+    }
+    // ── Standard RMT flat-pulse path (CamBox / EUI / EUP) ─────────────
     static rmt_symbol_word_t sym;
     sym.level0    = 1;
     sym.duration0 = (uint16_t)s_pw_us;   // HIGH for s_pw_us µs
@@ -192,6 +200,16 @@ void IRAM_ATTR cambox_isr() {
     //   If the implied RPM is above CAM_MAX_RPM the pulse is likely
     //   noise (e.g. 50 Hz mains coupling or ringing on the wire).
     if (gap < CAM_MIN_PERIOD_US) return;
+
+    // ── Stage 3: rate-of-change plausibility ─────────────────────────
+    //   Reject if period jumps > 60% from the last stored period.
+    //   Catches slow EMI bursts that slip through Stage 1 & 2.
+    if (s_rpm_period > 0) {
+        unsigned long ratio = (gap > s_rpm_period)
+                              ? (gap * 100UL / s_rpm_period)
+                              : (s_rpm_period * 100UL / gap);
+        if (ratio > 160UL) return;   // > 60% jump = noise, discard
+    }
 
     // ── Valid pulse — update state ────────────────────────────────────
     s_rpm_period  = gap;
@@ -254,6 +272,7 @@ void setup() {
 
     // RMT owns PIN_INJECTOR — do NOT call pinMode on it
     rmt_init();
+    init_debug_pin();               // GPIO26 — oscilloscope trigger for P&H
 
     pinMode(PIN_LED,      OUTPUT);
     pinMode(PIN_BUZZER,   OUTPUT);
@@ -374,12 +393,18 @@ void send_telemetry() {
     if (s_rpm_wcnt > 0 && cam_age < RPM_STALE_US) {
         noInterrupts();
         int           cnt = s_rpm_wcnt;
-        unsigned long sum = 0;
-        for (int i = 0; i < cnt; i++) sum += s_rpm_win[i];
+        unsigned long buf[RPM_WINDOW];
+        for (int i = 0; i < cnt; i++) buf[i] = s_rpm_win[i];
         interrupts();
 
-        unsigned long avg_period = sum / (unsigned long)cnt;
-        if (avg_period > 0) rpm = (int)(60000000UL / avg_period);
+        // Insertion sort → median (robust to outlier noise periods)
+        for (int i = 1; i < cnt; i++) {
+            unsigned long k = buf[i]; int j = i - 1;
+            while (j >= 0 && buf[j] > k) { buf[j + 1] = buf[j]; j--; }
+            buf[j + 1] = k;
+        }
+        unsigned long median_period = buf[cnt / 2];
+        if (median_period > 0) rpm = (int)(60000000UL / median_period);
     }
 
     // Atomically snapshot and reset counters
@@ -478,6 +503,31 @@ void process_command(const String& cmd) {
             Serial.print("OK:ANGLE:"); Serial.println(s_delay_deg);
         } else {
             Serial.println("ERR:ANGLE_RANGE_0-45");
+        }
+
+    } else if (cmd.startsWith("SET_PH ")) {
+        // ── SET_PH <peak_us> <period_us> <on_us> ──────────────────────
+        //    Example: SET_PH 175 40 10
+        //    Enables Peak & Hold mode and updates runtime config.
+        int sp1 = cmd.indexOf(' ', 7);
+        int sp2 = (sp1 > 0) ? cmd.indexOf(' ', sp1 + 1) : -1;
+        if (sp1 < 0 || sp2 < 0) {
+            Serial.println("PH_CONFIG_ERR:BAD_FORMAT");
+        } else {
+            uint32_t p_us  = (uint32_t)cmd.substring(7,       sp1).toInt();
+            uint32_t per   = (uint32_t)cmd.substring(sp1 + 1, sp2).toInt();
+            uint32_t on_us = (uint32_t)cmd.substring(sp2 + 1).toInt();
+            if (p_us  < 50   || p_us  > 2000 ||
+                per   < 20   || per   > 500  ||
+                on_us < 1    || on_us >= per) {
+                Serial.println("PH_CONFIG_ERR:OUT_OF_RANGE");
+            } else {
+                g_ph_config.peak_us   = p_us;
+                g_ph_config.period_us = per;
+                g_ph_config.on_us     = on_us;
+                g_use_peak_hold       = true;
+                Serial.println("PH_CONFIG_OK");
+            }
         }
 
     } else {

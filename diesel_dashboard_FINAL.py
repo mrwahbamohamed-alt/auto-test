@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import time
 import logging
 import socket
@@ -55,7 +55,7 @@ GRAPH_FPS    = 30
 P_VX4_ZERO_MV   = 112.0   # mV ← عدّل بـ SET ZERO أو يدوياً
 P_SLOPE_BAR_MV  = 2.355   # BAR/mV ← slope من regression الثلاث نقاط
 P_BAR_MAX_VAL   = 1600.0
-P_EMA_ALPHA     = 0.02    # ← 0.01=أبطأ/أثبت  0.1=أسرع
+P_EMA_ALPHA     = 0.20    # ← 0.01=أبطأ/أثبت  0.1=أسرع
 P_DEAD_BAND     = 5.0     # BAR ← أقل من ده = صفر
 P_CAL_OFFSET    = -9.0    # fine trim (BAR) ← عدّل هنا لو القراية عالية أو واطية
 RPM_DIVISOR     = 2.0     # ← عدّل هنا لو قراية الـ RPM غلط (actual ÷ displayed)
@@ -543,9 +543,6 @@ QFrame[frameShape="4"] { color: #D1D1D6; }
 """
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  CYLINDER GAUGE WIDGET  — vertical graduated measuring tube
-# ══════════════════════════════════════════════════════════════════════
 class CylinderGauge(QWidget):
     """
     Draws a vertical graduated cylinder (like a lab measuring tube).
@@ -564,10 +561,15 @@ class CylinderGauge(QWidget):
         self._high    = high
         self._scale   = scale_max or max(high * 1.25, target * 1.5, 5.0)
         self._actual  = None        # None = not measured yet
+        self._dark    = True        # theme — drives bg / text colors
         self.setMinimumSize(45, 120)
 
     def set_actual(self, value: float | None):
         self._actual = value
+        self.update()
+
+    def set_dark(self, dark: bool):
+        self._dark = dark
         self.update()
 
     def set_spec(self, target, low, high, scale_max=None):
@@ -596,8 +598,14 @@ class CylinderGauge(QWidget):
             frac = max(0.0, min(1.0, val / self._scale)) if self._scale > 0 else 0
             return int(bot - frac * ch)
 
+        # ── theme-aware colors (dark vs light) ────────────────────────
+        c_bg      = BG      if self._dark else '#FFFFFF'
+        c_outline = BORDER2 if self._dark else '#C7C7CC'
+        c_dim     = TXT_DIM if self._dark else '#9A9AA0'
+        c_sec     = TXT_SEC if self._dark else '#1C1C1E'
+
         # ── background ────────────────────────────────────────────────
-        p.fillRect(0, 0, W, H, QColor(BG))
+        p.fillRect(0, 0, W, H, QColor(c_bg))
 
         # ── green acceptable zone ─────────────────────────────────────
         if self._high > 0:
@@ -614,7 +622,7 @@ class CylinderGauge(QWidget):
             p.fillRect(x0 + 2, y_act, cw - 4, bot - y_act, fill_c)
 
         # ── cylinder outline ──────────────────────────────────────────
-        pen = p.pen(); pen.setColor(QColor(BORDER2)); pen.setWidth(1); p.setPen(pen)
+        pen = p.pen(); pen.setColor(QColor(c_outline)); pen.setWidth(1); p.setPen(pen)
         p.drawRect(x0, top, cw, ch)
 
         # ── graduations ───────────────────────────────────────────────
@@ -624,10 +632,10 @@ class CylinderGauge(QWidget):
             val = self._scale * i / steps
             yg  = y_for(val)
             tick_w = 8 if i % 2 == 0 else 4
-            pen.setColor(QColor(TXT_DIM)); pen.setWidth(1); p.setPen(pen)
+            pen.setColor(QColor(c_dim)); pen.setWidth(1); p.setPen(pen)
             p.drawLine(x0 + cw, yg, x0 + cw + tick_w, yg)
             if i % 2 == 0 and (x0 + cw + 11 + 28) <= W:
-                pen.setColor(QColor(TXT_DIM)); p.setPen(pen)
+                pen.setColor(QColor(c_dim)); p.setPen(pen)
                 txt = f"{val:.0f}"
                 p.drawText(x0 + cw + 11, yg + 4, txt)
 
@@ -643,11 +651,11 @@ class CylinderGauge(QWidget):
 
         # ── label (bottom) ────────────────────────────────────────────
         p.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
-        pen.setColor(QColor(TXT_SEC)); p.setPen(pen)
+        pen.setColor(QColor(c_sec)); p.setPen(pen)
         p.drawText(0, bot + 8, W, 14,
                    Qt.AlignmentFlag.AlignHCenter, self._label)
         p.setFont(QFont("Consolas", 7))
-        pen.setColor(QColor(TXT_DIM)); p.setPen(pen)
+        pen.setColor(QColor(c_dim)); p.setPen(pen)
         p.drawText(0, bot + 22, W, 12,
                    Qt.AlignmentFlag.AlignHCenter, self._unit)
 
@@ -660,13 +668,13 @@ class CylinderGauge(QWidget):
                        Qt.AlignmentFlag.AlignHCenter, f"{self._actual:.2f}")
         else:
             p.setFont(QFont("Consolas", 7))
-            pen.setColor(QColor(TXT_DIM)); p.setPen(pen)
+            pen.setColor(QColor(c_dim)); p.setPen(pen)
             p.drawText(0, bot + 34, W, 14,
                        Qt.AlignmentFlag.AlignHCenter, "—.—")
 
         # ── top cap ───────────────────────────────────────────────────
         p.setFont(QFont("Consolas", 7))
-        pen.setColor(QColor(TXT_DIM)); p.setPen(pen)
+        pen.setColor(QColor(c_dim)); p.setPen(pen)
         p.drawText(0, 6, W, 14,
                    Qt.AlignmentFlag.AlignHCenter, f"max {self._scale:.0f}")
 
@@ -674,7 +682,24 @@ class CylinderGauge(QWidget):
 # ══════════════════════════════════════════════════════════════════════
 #  INJECTOR DATABASE
 # ══════════════════════════════════════════════════════════════════════
-_DB_PATH = Path(__file__).parent / "injector_db.json"
+# ── Resolve database path (works both as .py script and PyInstaller .exe) ──
+def _resolve_db_path() -> Path:
+    # Writable folder: %APPDATA%\CAM PRO\
+    app_data = Path(os.environ.get("APPDATA", Path.home())) / "CAM PRO"
+    app_data.mkdir(parents=True, exist_ok=True)
+    writable = app_data / "injector_db.json"
+    if not writable.exists():
+        # First run — seed from bundled copy
+        if getattr(sys, "frozen", False):
+            seed = Path(sys._MEIPASS) / "injector_db.json"
+        else:
+            seed = Path(__file__).parent / "injector_db.json"
+        if seed.exists():
+            import shutil
+            shutil.copy2(seed, writable)
+    return writable
+
+_DB_PATH = _resolve_db_path()
 
 class InjectorDatabase:
     """Load, query, and save the injector profile database."""
@@ -898,6 +923,7 @@ class DieselDashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle("INJECTOR PRO  ·  Diesel Injection Test System")
         self.resize(1400, 860)
+        self.setMinimumWidth(900)   # prevent overflow on smaller screens
         self.setStyleSheet(STYLE_DARK)
 
         # ── buffers ───────────────────────────────────────────────────
@@ -924,8 +950,9 @@ class DieselDashboard(QMainWindow):
         self._inj_win     = deque(maxlen=20)   # 20 × 10ms = 200ms sliding window
 
         # ── pulse hold ────────────────────────────────────────────────
-        self._inj_hold = 0
-        self._cam_hold = 0
+        self._inj_hold    = 0
+        self._cam_hold    = 0
+        self._pressure_ema = 0.0   # EMA accumulator for slew-rate limiter
 
         # ── LCD snapshot (updated at 30fps) ───────────────────────────
         self._snap_p = 0.0
@@ -973,6 +1000,13 @@ class DieselDashboard(QMainWindow):
         self._active_profile   = None        # currently loaded profile dict
         self._active_mode      = "Full Load" # last selected test mode
         self._max_pressure     = 0.0         # peak pressure this session
+        # ── Session time-series statistics ───────────────────────────
+        self._min_pressure     = None        # lowest pressure seen (BAR)
+        self._sum_pressure     = 0.0         # running sum → average
+        self._cnt_pressure     = 0           # sample count
+        self._sum_rpm          = 0.0
+        self._cnt_rpm          = 0
+        self._max_rpm          = 0           # peak RPM this session
 
         # ── serial ────────────────────────────────────────────────────
         self.thread = QThread()
@@ -999,6 +1033,34 @@ class DieselDashboard(QMainWindow):
         self._graph_timer = QTimer()
         self._graph_timer.timeout.connect(self._tick)
         self._graph_timer.start(1000 // GRAPH_FPS)
+
+        self._setup_shortcuts()
+
+    # ──────────────────────────────────────────────────────────────────
+    #  KEYBOARD SHORTCUTS  (test-bench ergonomics + emergency stop)
+    # ──────────────────────────────────────────────────────────────────
+    def _setup_shortcuts(self):
+        from PyQt6.QtGui import QShortcut, QKeySequence
+
+        def sc(key, slot):
+            s = QShortcut(QKeySequence(key), self)
+            s.activated.connect(slot)
+            return s
+
+        sc("F5",      self._on_start)    # START
+        sc("F6",      self._on_stop)     # STOP
+        sc("Esc",     self._on_stop)     # emergency STOP
+        sc("Ctrl+S",  self._save_pdf)    # save PDF report
+        sc("Ctrl+E",  self._export_csv)  # export CSV
+        sc("Ctrl+R",  self._sync)        # re-sync params
+        sc("Ctrl+L",  self._toggle_theme)  # toggle Light/Dark
+
+        # Surface the shortcuts in tooltips
+        self.start_btn.setToolTip("Start injection  ·  F5")
+        self.stop_btn.setToolTip("Stop injection  ·  F6 / Esc")
+        self.report_btn.setToolTip("Save PDF report  ·  Ctrl+S")
+        self.csv_btn.setToolTip("Export CSV  ·  Ctrl+E")
+        self.theme_btn.setToolTip("Toggle Light / Dark  ·  Ctrl+L")
 
     # ──────────────────────────────────────────────────────────────────
     #  UI BUILD
@@ -1042,7 +1104,7 @@ class DieselDashboard(QMainWindow):
         self.hdr_mode.setStyleSheet(
             f"color:{PH_BLUE}; font-size:11px; font-family:monospace; letter-spacing:1px;")
 
-        self.hdr_conn = QLabel("o  DISCONNECTED")
+        self.hdr_conn = QLabel("●  DISCONNECTED")
         self.hdr_conn.setStyleSheet(
             f"color:{PH_RED}; font-size:11px; font-family:monospace; letter-spacing:1px;")
 
@@ -1124,8 +1186,8 @@ class DieselDashboard(QMainWindow):
     #  RIGHT DISPLAY PANEL
     # ──────────────────────────────────────────────────────────────────
     def _make_right(self):
-        w = QWidget()
-        v = QVBoxLayout(w); v.setSpacing(8); v.setContentsMargins(0, 0, 0, 0)
+        inner = QWidget()
+        v = QVBoxLayout(inner); v.setSpacing(8); v.setContentsMargins(0, 0, 0, 0)
 
         # Row 1: Live measurement meters (BAR / RPM / INJ)
         v.addWidget(self._panel_meters())
@@ -1139,17 +1201,44 @@ class DieselDashboard(QMainWindow):
         body.addWidget(self._panel_calib_table(), stretch=1)
         v.addLayout(body, stretch=4)
 
-        return w
+        return inner
+
+    # ── Calibration table styling (theme-aware) ───────────────────────
+    def _calib_table_style(self, dark: bool) -> str:
+        if dark:
+            bg, txt, grid   = PANEL, TXT_PRI, BG
+            hdr_bg, hdr_txt = HEADER, TXT_DIM
+            hdr_line        = BORDER2
+        else:
+            bg, txt, grid   = '#FFFFFF', '#1C1C1E', '#E0E0E6'
+            hdr_bg, hdr_txt = '#EBEBF0', '#3A3A4A'
+            hdr_line        = '#C7C7CC'
+        return f"""
+            QTableWidget {{
+                background:{bg}; color:{txt}; border:none;
+                font-family:Consolas,monospace; font-size:14px;
+                gridline-color:{grid};
+            }}
+            QTableWidget::item {{ padding: 8px 3px; border: none; }}
+            QTableWidget::item:selected {{ background:{PH_BLUE}22; color:{txt}; }}
+            QHeaderView::section {{
+                background:{hdr_bg}; color:{hdr_txt}; border:none;
+                font-size:10px; font-weight:bold; letter-spacing:1px;
+                padding:6px; border-bottom:1px solid {hdr_line};
+            }}
+        """
 
     # ── Calibration table ─────────────────────────────────────────────
     def _panel_calib_table(self):
         from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
         box = QGroupBox("CALIBRATION TABLE  —  DELIVERY SPEC  (ml / 1000 pulses)")
+        box.setMinimumWidth(0)          # allow shrinking to fit any screen
         v   = QVBoxLayout(box); v.setContentsMargins(6, 6, 6, 6)
 
         cols = ["Test Mode", "RPM", "PW (µs)", "Time (s)",
                 "Target (ml)", "Min", "Max", "Unit", "Actual", "Status"]
         self._calib_table = QTableWidget(0, len(cols))
+        self._calib_table.setMinimumWidth(0)     # allow layout to shrink table
         self._calib_table.setHorizontalHeaderLabels(cols)
         self._calib_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch)
@@ -1157,27 +1246,14 @@ class DieselDashboard(QMainWindow):
             0, QHeaderView.ResizeMode.Fixed)
         self._calib_table.setColumnWidth(0, 148)
         self._calib_table.verticalHeader().setVisible(False)
-        self._calib_table.verticalHeader().setDefaultSectionSize(95)
+        self._calib_table.verticalHeader().setDefaultSectionSize(72)
         self._calib_table.setWordWrap(False)
         self._calib_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked |
             QTableWidget.EditTrigger.SelectedClicked)
         self._calib_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
-        self._calib_table.setStyleSheet(f"""
-            QTableWidget {{
-                background:{PANEL}; color:{TXT_PRI}; border:none;
-                font-family:Consolas,monospace; font-size:14px;
-                gridline-color:{BG};
-            }}
-            QTableWidget::item {{ padding: 8px 3px; border: none; }}
-            QTableWidget::item:selected {{ background:{PH_BLUE}22; color:{TXT_PRI}; }}
-            QHeaderView::section {{
-                background:{HEADER}; color:{TXT_DIM}; border:none;
-                font-size:10px; font-weight:bold; letter-spacing:1px;
-                padding:6px; border-bottom:1px solid {BORDER2};
-            }}
-        """)
+        self._calib_table.setStyleSheet(self._calib_table_style(self._dark_mode))
         # Connect cell changed so technician can enter actual values
         self._calib_table.cellChanged.connect(self._on_calib_actual_changed)
         # Right-click to edit spec values (PIN protected)
@@ -1207,13 +1283,26 @@ class DieselDashboard(QMainWindow):
             "CamBox":    "VE",
         }
 
-        row_colors = {
-            "Idle":      "#0A1820",
-            "Medium":    "#0A1808",
-            "Full Load": "#1A0808",
-            "Leak Test": "#1A1208",
-            "CamBox":    "#100A20",
-        }
+        if self._dark_mode:
+            row_colors = {
+                "Idle":      "#0A1820",
+                "Medium":    "#0A1808",
+                "Full Load": "#1A0808",
+                "Leak Test": "#1A1208",
+                "CamBox":    "#100A20",
+            }
+            default_bg  = PANEL
+            default_txt = TXT_PRI
+        else:
+            row_colors = {
+                "Idle":      "#EAF4FA",
+                "Medium":    "#EDF7E8",
+                "Full Load": "#FBECEC",
+                "Leak Test": "#FBF4E6",
+                "CamBox":    "#F1EBFA",
+            }
+            default_bg  = "#FFFFFF"
+            default_txt = "#1C1C1E"
 
         for mname in mode_names:
             mp = modes.get(mname, {})
@@ -1225,9 +1314,8 @@ class DieselDashboard(QMainWindow):
                 item = QTableWidgetItem(str(txt))
                 if not editable:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                if color:
-                    item.setForeground(QColor(color))
-                bg = QColor(row_colors.get(mname, PANEL))
+                item.setForeground(QColor(color if color else default_txt))
+                bg = QColor(row_colors.get(mname, default_bg))
                 item.setBackground(bg)
                 return item
 
@@ -1314,7 +1402,7 @@ class DieselDashboard(QMainWindow):
             )
             self._cylinders[mname] = cg
             h.addWidget(cg, stretch=1)
-        box.setFixedWidth(500)
+        box.setMinimumWidth(300)   # was setFixedWidth(500) — allow flexible width
         return box
 
     def _refresh_cylinders(self, profile: dict | None):
@@ -1356,9 +1444,14 @@ class DieselDashboard(QMainWindow):
         self.glw_p, self.curve_p = mini(G_AMBER, "BAR")
         self.glw_i, self.curve_i = mini(G_GREEN, "INJ")
         self.glw_c, self.curve_c = mini(G_BLUE,  "CAM")
-        v.addWidget(self.glw_p)
-        v.addWidget(self.glw_i)
-        v.addWidget(self.glw_c)
+
+        # Override pyqtgraph's large default sizeHint — allow equal stretch
+        for glw in (self.glw_p, self.glw_i, self.glw_c):
+            glw.setMinimumWidth(50)
+
+        v.addWidget(self.glw_p, stretch=1)
+        v.addWidget(self.glw_i, stretch=1)
+        v.addWidget(self.glw_c, stretch=1)
 
         # Freeze button
         from PyQt6.QtWidgets import QHBoxLayout as QHL
@@ -1410,7 +1503,7 @@ class DieselDashboard(QMainWindow):
         self.conn_btn.clicked.connect(self._toggle_conn)
         g.addWidget(self.conn_btn, 2, 0, 1, 2)
 
-        self.conn_lbl = QLabel("  DISCONNECTED")
+        self.conn_lbl = QLabel("●  DISCONNECTED")
         self.conn_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.conn_lbl.setStyleSheet(
             f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
@@ -1705,7 +1798,7 @@ class DieselDashboard(QMainWindow):
     # ── meters panel (Hartridge-style large displays) ─────────────────
     def _panel_meters(self):
         box = QGroupBox("MEASUREMENTS")
-        h   = QHBoxLayout(box); h.setSpacing(2)
+        h   = QVBoxLayout(box); h.setSpacing(4)
 
         dk = self._dark_mode  # capture once for all meter() calls
 
@@ -1727,7 +1820,7 @@ class DieselDashboard(QMainWindow):
 
             lcd = QLCDNumber()
             lcd.setDigitCount(digits)
-            lcd.setMinimumHeight(55)
+            lcd.setMinimumSize(10, 55)   # override large default minimumSizeHint
             lcd.setSegmentStyle(QLCDNumber.SegmentStyle.Flat)
             lcd.setStyleSheet(
                 f"QLCDNumber{{color:{color}; background:{G_BG};"
@@ -1744,14 +1837,23 @@ class DieselDashboard(QMainWindow):
             v.addWidget(unit_lbl)
             return frame, lcd
 
-        # Store frame refs for Feature 4 alarm blinking
-        self.frame_r, self.lcd_r = meter("RPM",  PH_PURPLE, 5, "RPM")
-        self.frame_p, self.lcd_p = meter("PRESSURE",  PH_AMBER, 7, "BAR")
-        f3,           self.lcd_a = meter("ANGLE",    PH_BLUE,   3, "deg")
+        # Store frame refs for Feature 4 alarm blinking + theme toggle
+        self.frame_r, self.lcd_r = meter("RPM",      PH_PURPLE, 5, "RPM")
+        self.frame_p, self.lcd_p = meter("PRESSURE", PH_AMBER,  7, "BAR")
+        self.frame_a, self.lcd_a = meter("ANGLE",    PH_BLUE,   3, "deg")
+        f3 = self.frame_a
+
+        # Force equal horizontal distribution — ignore per-widget sizeHints
+        from PyQt6.QtWidgets import QSizePolicy as _SP
+        _eq = _SP(_SP.Policy.Ignored, _SP.Policy.Preferred)
+        self.frame_r.setSizePolicy(_eq)
+        self.frame_p.setSizePolicy(_eq)
+        f3.setSizePolicy(_eq)
 
         # ── INJ LED panel — flashes green on every injection pulse ────
         dk = self._dark_mode
         f2 = QWidget()
+        self.frame_inj = f2
         f2.setStyleSheet(
             f"background:{'#1C1C1E' if dk else '#FFFFFF'};"
             f" border:1px solid {'#2C2C2E' if dk else '#E0E0E6'}; border-radius:6px;")
@@ -1791,9 +1893,12 @@ class DieselDashboard(QMainWindow):
             lambda: self.inj_led.setStyleSheet(self._led_off_style))
 
         self.lcd_i = None   # kept for compatibility, not displayed
+        from PyQt6.QtWidgets import QSizePolicy as _SP2
+        f2.setSizePolicy(_SP2(_SP2.Policy.Ignored, _SP2.Policy.Preferred))
 
         # Engine status
         status_box = QWidget()
+        self.frame_engine = status_box
         status_box.setStyleSheet(
             f"background:{PANEL}; border:1px solid {BORDER2}; border-radius:6px;")
         sv = QVBoxLayout(status_box); sv.setContentsMargins(10, 8, 10, 8); sv.setSpacing(6)
@@ -1822,8 +1927,22 @@ class DieselDashboard(QMainWindow):
         sv.addWidget(self.mode_lbl)
         sv.addStretch()
 
-        for f in [self.frame_r, self.frame_p, f2, f3, status_box]:
-            h.addWidget(f, stretch=1)
+        # ── Row 1: primary readings ───────────────────────────────────────
+        top_row = QHBoxLayout(); top_row.setSpacing(6)
+        top_row.addWidget(self.frame_r, stretch=1)   # RPM
+        top_row.addWidget(self.frame_p, stretch=1)   # PRESSURE
+        top_row.addWidget(f2,           stretch=1)   # INJ PULSE
+
+        # ── Row 2: secondary readings + engine state ───────────────────
+        bot_row = QHBoxLayout(); bot_row.setSpacing(6)
+        bot_row.addWidget(f3,           stretch=1)   # ANGLE
+        bot_row.addWidget(status_box,   stretch=2)   # ENGINE STATUS
+        bot_row.addStretch(1)
+        bot_container = QWidget()
+        bot_container.setLayout(bot_row)
+
+        h.addLayout(top_row,       stretch=3)
+        h.addWidget(bot_container, stretch=2)
 
         return box
 
@@ -2238,7 +2357,6 @@ class DieselDashboard(QMainWindow):
             QMessageBox.warning(self, "Add Profile", "Brand and Model are required.")
             return
 
-        import uuid
         pid = f"{brand.upper().replace(' ','_')}_{model.upper().replace(' ','_')[:20]}"
         try:
             max_pw = int(f_max_pw.text()) if f_max_pw.text().strip() else 800
@@ -2436,97 +2554,222 @@ class DieselDashboard(QMainWindow):
             QMessageBox.critical(self, "PDF Error", f"Cannot write to:\n{path}")
             return
 
-        page  = printer.pageRect(QPrinter.Unit.DevicePixel)
-        W     = page.width()
-        H     = page.height()
+        page   = printer.pageRect(QPrinter.Unit.DevicePixel)
+        W      = page.width()
+        H      = page.height()
         margin = W * 0.06
 
+        # Font sizes must be in POINTS (physical, DPI-independent) — never a
+        # fraction of the pixel width (that yields ~190pt at 1200 DPI).
+        _dpi   = printer.resolution() or 1200
+        _pw_pt = W / _dpi * 72.0          # page width in points (~575 for A4)
+        def _pt(frac):
+            return max(5, round(_pw_pt * frac * 1.5))
+
         # ── header bar ────────────────────────────────────────────────
-        painter.fillRect(int(0), int(0), int(W), int(H * 0.07),
-                         QColor(HEADER))
+        painter.fillRect(0, 0, int(W), int(H * 0.07), QColor(HEADER))
         painter.setPen(QColor(PH_GREEN))
-        f = QFont("Arial", int(W * 0.022), QFont.Weight.Bold)
-        painter.setFont(f)
-        painter.drawText(int(margin), int(H * 0.048),
+        painter.setFont(QFont("Arial", _pt(0.018), QFont.Weight.Bold))
+        painter.drawText(int(margin), int(H * 0.044),
                          "INJECTOR PRO  —  Diesel Injection Test Report")
-
+        # Date — right-aligned just under the title so it never overlaps.
+        # Use painter.fontMetrics() (device DPI) not QFontMetrics (screen DPI).
         painter.setPen(QColor(TXT_SEC))
-        painter.setFont(QFont("Arial", int(W * 0.011)))
-        now_str = datetime.datetime.now().strftime("%A, %d %B %Y  %H:%M:%S")
-        painter.drawText(int(W - margin - W * 0.25), int(H * 0.048), now_str)
+        painter.setFont(QFont("Arial", _pt(0.0095)))
+        now_str = datetime.datetime.now().strftime("%A, %d %B %Y  %H:%M")
+        dw = painter.fontMetrics().horizontalAdvance(now_str)
+        painter.drawText(int(W - margin - dw), int(H * 0.062), now_str)
 
-        # ── divider ───────────────────────────────────────────────────
-        painter.setPen(QColor(BORDER2))
-        y_div = int(H * 0.08)
-        painter.drawLine(int(margin), y_div, int(W - margin), y_div)
+        # ── helpers ───────────────────────────────────────────────────
+        def hline(y):
+            painter.setPen(QColor(BORDER2))
+            painter.drawLine(int(margin), int(y), int(W - margin), int(y))
 
-        # ── two-column info ───────────────────────────────────────────
-        col1_x = int(margin)
-        col2_x = int(W * 0.52)
-        row_h  = int(H * 0.033)
-        y0     = int(H * 0.095)
+        def section(x, y, title, color=PH_BLUE):
+            painter.setFont(QFont("Arial", _pt(0.011), QFont.Weight.Bold))
+            painter.setPen(QColor(color))
+            painter.drawText(int(x), int(y), title)
 
         def draw_kv(x, y, key, val, key_color=TXT_DIM, val_color=TXT_PRI):
-            painter.setFont(QFont("Courier New", int(W * 0.010), QFont.Weight.Bold))
+            painter.setFont(QFont("Courier New", _pt(0.0095), QFont.Weight.Bold))
             painter.setPen(QColor(key_color))
-            painter.drawText(x, y, key)
-            painter.setFont(QFont("Courier New", int(W * 0.013)))
+            painter.drawText(int(x), int(y), key)
+            painter.setFont(QFont("Courier New", _pt(0.012)))
             painter.setPen(QColor(val_color))
-            painter.drawText(x + int(W * 0.14), y, val)
+            painter.drawText(int(x + W * 0.135), int(y), val)
 
-        preset_name = self.preset_combo.currentText()
-        mode_name   = "CamBox (Sync)" if self._mode_id == 1 else "Common Rail"
-        status_name = "RUNNING" if not self.graph_paused else "STOPPED"
+        hline(H * 0.08)
 
-        # Left column — parameters
-        painter.setFont(QFont("Arial", int(W * 0.012), QFont.Weight.Bold))
-        painter.setPen(QColor(PH_BLUE))
-        painter.drawText(col1_x, y0, "INJECTION PARAMETERS")
-        draw_kv(col1_x, y0 + row_h * 1, "PRESET",     preset_name)
-        draw_kv(col1_x, y0 + row_h * 2, "MODE",       mode_name)
-        draw_kv(col1_x, y0 + row_h * 3, "PULSE WIDTH", f"{self.pw_sp.value()} µs")
-        draw_kv(col1_x, y0 + row_h * 4, "FREQUENCY",  f"{self.fr_sp.value()} Hz")
-        draw_kv(col1_x, y0 + row_h * 5, "DELAY ANGLE", f"{self.an_sp.value()} °")
-        draw_kv(col1_x, y0 + row_h * 6, "STATUS",     status_name,
-                val_color=PH_GREEN if status_name == "RUNNING" else PH_RED)
+        # ── identification + session summary (two columns) ────────────
+        col1_x = margin
+        col2_x = W * 0.52
+        row_h  = H * 0.030
+        y0     = H * 0.105
 
-        # Right column — live readings
-        painter.setFont(QFont("Arial", int(W * 0.012), QFont.Weight.Bold))
-        painter.setPen(QColor(PH_AMBER))
-        painter.drawText(col2_x, y0, "LIVE READINGS")
-        draw_kv(col2_x, y0 + row_h * 1, "PRESSURE",   f"{self._snap_p:.0f} BAR",   val_color=PH_AMBER)
-        draw_kv(col2_x, y0 + row_h * 2, "RPM",        f"{self._snap_r}",            val_color=PH_PURPLE)
-        draw_kv(col2_x, y0 + row_h * 3, "INJ RATE",   f"{round(self._snap_i)} inj/s", val_color=PH_GREEN)
-        draw_kv(col2_x, y0 + row_h * 4, "ANGLE",      f"{self._snap_a} °",          val_color=PH_BLUE)
-        draw_kv(col2_x, y0 + row_h * 5, "TOTAL PULSES", f"{self.total_pulses:,}")
-        port_txt = self.port_combo.currentText() or "—"
-        draw_kv(col2_x, y0 + row_h * 6, "COM PORT",   port_txt)
+        prof   = self._active_profile or {}
+        inj_id = self.inj_id_edit.text().strip() or "—"
+        brand  = prof.get("brand", "—")
+        model  = prof.get("model", "—")
+        engine = prof.get("engine", "") or "—"
+        itype  = prof.get("type", "") or "—"
 
-        # ── divider ───────────────────────────────────────────────────
-        y_div2 = y0 + row_h * 7 + int(H * 0.01)
-        painter.setPen(QColor(BORDER2))
-        painter.drawLine(int(margin), y_div2, int(W - margin), y_div2)
+        section(col1_x, y0, "INJECTOR IDENTIFICATION")
+        draw_kv(col1_x, y0 + row_h * 1, "INJECTOR ID", inj_id, val_color=PH_CYAN)
+        draw_kv(col1_x, y0 + row_h * 2, "BRAND",       brand)
+        draw_kv(col1_x, y0 + row_h * 3, "MODEL",       model)
+        draw_kv(col1_x, y0 + row_h * 4, "TYPE",        itype)
+        draw_kv(col1_x, y0 + row_h * 5, "ENGINE",      engine)
 
-        # ── oscilloscope snapshot ─────────────────────────────────────
-        painter.setFont(QFont("Arial", int(W * 0.011), QFont.Weight.Bold))
+        # Session summary (real time-series stats)
+        h_el = self._session_elapsed // 3600
+        m_el = (self._session_elapsed % 3600) // 60
+        s_el = self._session_elapsed % 60
+        dur_txt = f"{h_el:02d}:{m_el:02d}:{s_el:02d}"
+        min_p   = self._min_pressure if self._min_pressure is not None else 0.0
+
+        section(col2_x, y0, "SESSION SUMMARY", PH_AMBER)
+        draw_kv(col2_x, y0 + row_h * 1, "DURATION",   dur_txt)
+        draw_kv(col2_x, y0 + row_h * 2, "TEST MODE",  self._active_mode, val_color=PH_BLUE)
+        draw_kv(col2_x, y0 + row_h * 3, "TOTAL PULSES", f"{self.total_pulses:,}")
+        draw_kv(col2_x, y0 + row_h * 4, "PRESSURE",
+                f"peak {self._max_pressure:.0f}  avg {self._avg_pressure():.0f} BAR",
+                val_color=PH_AMBER)
+        draw_kv(col2_x, y0 + row_h * 5, "RPM",
+                f"peak {self._max_rpm}  avg {self._avg_rpm()}",
+                val_color=PH_PURPLE)
+
+        y_after_info = y0 + row_h * 6 + H * 0.005
+        hline(y_after_info)
+
+        # ── CALIBRATION RESULTS table ─────────────────────────────────
+        ytab = y_after_info + H * 0.030
+        section(margin, ytab, "CALIBRATION RESULTS  —  DELIVERY SPEC", PH_GREEN)
+
+        # column layout (fractions of usable width)
+        usable = W - margin * 2
+        cols   = ["TEST MODE", "TARGET", "MIN", "MAX", "ACTUAL", "RESULT"]
+        cfrac  = [0.30, 0.14, 0.12, 0.12, 0.14, 0.18]
+        cx     = []
+        acc    = margin
+        for fr in cfrac:
+            cx.append(acc)
+            acc += usable * fr
+
+        # header row
+        hdr_y = ytab + H * 0.028
+        painter.fillRect(int(margin), int(hdr_y - H * 0.018),
+                         int(usable), int(H * 0.024), QColor(HEADER))
+        painter.setFont(QFont("Arial", _pt(0.0085), QFont.Weight.Bold))
         painter.setPen(QColor(TXT_DIM))
-        painter.drawText(int(margin), y_div2 + int(H * 0.025), "WAVEFORM OSCILLOSCOPE SNAPSHOT")
+        for i, c in enumerate(cols):
+            painter.drawText(int(cx[i] + W * 0.005), int(hdr_y), c)
 
-        scope_pixmap = self.glw_p.grab()
-        scope_y  = y_div2 + int(H * 0.035)
-        scope_h  = int(H * 0.38)
-        scope_w  = int(W - margin * 2)
-        scaled   = scope_pixmap.scaled(
-            scope_w, scope_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-        painter.drawPixmap(int(margin), scope_y, scaled)
+        # data rows pulled from the calibration table widget
+        t        = self._calib_table
+        rh       = H * 0.030
+        ry       = hdr_y + H * 0.006
+        n_pass   = 0
+        n_fail   = 0
+        n_tested = 0
+
+        def cell_txt(row, col):
+            it = t.item(row, col)
+            return it.text().strip() if it and it.text() else "—"
+
+        for r in range(t.rowCount()):
+            ry += rh
+            mode   = cell_txt(r, 0)
+            target = cell_txt(r, 4)
+            cmin   = cell_txt(r, 5)
+            cmax   = cell_txt(r, 6)
+            actual = cell_txt(r, 8)
+            status = cell_txt(r, 9)
+
+            # zebra background
+            if r % 2 == 0:
+                painter.fillRect(int(margin), int(ry - H * 0.020),
+                                 int(usable), int(rh), QColor(PANEL))
+
+            painter.setFont(QFont("Courier New", _pt(0.0105), QFont.Weight.Bold))
+            painter.setPen(QColor(PH_CYAN))
+            painter.drawText(int(cx[0] + W * 0.005), int(ry), mode)
+
+            painter.setFont(QFont("Courier New", _pt(0.0105)))
+            painter.setPen(QColor(TXT_PRI))
+            painter.drawText(int(cx[1] + W * 0.005), int(ry), target)
+            painter.drawText(int(cx[2] + W * 0.005), int(ry), cmin)
+            painter.drawText(int(cx[3] + W * 0.005), int(ry), cmax)
+
+            # actual + result
+            has_actual = actual not in ("—", "")
+            painter.setPen(QColor(PH_BLUE if has_actual else TXT_DIM))
+            painter.drawText(int(cx[4] + W * 0.005), int(ry),
+                             actual if has_actual else "—")
+
+            if "PASS" in status:
+                res_c, res_t = PH_GREEN, "PASS"; n_pass += 1; n_tested += 1
+            elif "FAIL" in status:
+                res_c, res_t = PH_RED, "FAIL"; n_fail += 1; n_tested += 1
+            else:
+                res_c, res_t = TXT_DIM, "— not tested"
+            painter.setFont(QFont("Courier New", _pt(0.0105), QFont.Weight.Bold))
+            painter.setPen(QColor(res_c))
+            painter.drawText(int(cx[5] + W * 0.005), int(ry), res_t)
+
+        # overall verdict
+        ry += rh * 1.2
+        if n_tested == 0:
+            verdict_c, verdict = TXT_DIM, "NO MEASUREMENTS ENTERED"
+        elif n_fail == 0:
+            verdict_c, verdict = PH_GREEN, f"OVERALL: PASS   ({n_pass}/{n_tested} modes)"
+        else:
+            verdict_c, verdict = PH_RED, f"OVERALL: FAIL   ({n_fail} of {n_tested} modes out of spec)"
+        painter.setFont(QFont("Arial", _pt(0.012), QFont.Weight.Bold))
+        painter.setPen(QColor(verdict_c))
+        painter.drawText(int(margin), int(ry), verdict)
+
+        # ── waveform snapshots (all 3) ────────────────────────────────
+        ywav = ry + H * 0.025
+        hline(ywav)
+        section(margin, ywav + H * 0.028, "WAVEFORM SNAPSHOT", TXT_DIM)
+
+        graphs   = [(self.glw_p, "PRESSURE", G_AMBER),
+                    (self.glw_i, "INJECTION", G_GREEN),
+                    (self.glw_c, "CAM", G_BLUE)]
+        gw       = (usable - W * 0.02) / 3.0
+        gy       = ywav + H * 0.040
+        gh       = H * 0.075
+        painter.setFont(QFont("Arial", _pt(0.008), QFont.Weight.Bold))
+        for i, (glw, lbl, clr) in enumerate(graphs):
+            gx  = margin + i * (gw + W * 0.01)
+            # Fill the box exactly (scope strips are wide & short) + border
+            pm  = glw.grab().scaled(
+                int(gw), int(gh),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            painter.drawPixmap(int(gx), int(gy), pm)
+            painter.setPen(QColor(BORDER2))
+            painter.drawRect(int(gx), int(gy), int(gw), int(gh))
+            painter.setPen(QColor(clr))
+            painter.drawText(int(gx), int(gy + gh + H * 0.020), lbl)
+
+        # ── signature line ────────────────────────────────────────────
+        ysig = gy + gh + H * 0.05
+        painter.setPen(QColor(BORDER2))
+        painter.drawLine(int(margin), int(ysig), int(margin + W * 0.30), int(ysig))
+        painter.drawLine(int(W - margin - W * 0.30), int(ysig),
+                         int(W - margin), int(ysig))
+        painter.setFont(QFont("Arial", _pt(0.0085)))
+        painter.setPen(QColor(TXT_DIM))
+        painter.drawText(int(margin), int(ysig + H * 0.018), "Technician signature")
+        painter.drawText(int(W - margin - W * 0.30), int(ysig + H * 0.018),
+                         "Date / Stamp")
 
         # ── footer ────────────────────────────────────────────────────
         painter.setPen(QColor(TXT_DIM))
-        painter.setFont(QFont("Arial", int(W * 0.009)))
+        painter.setFont(QFont("Arial", _pt(0.009)))
         painter.drawText(int(margin), int(H * 0.97),
-                         "INJECTOR PRO  ·  Auto Test  ·  Diesel Injection Test System")
+                         "INJECTOR PRO  ·  Diesel Injection Test System")
         painter.drawText(int(W - margin - W * 0.1), int(H * 0.97), "Page 1 / 1")
 
         painter.end()
@@ -2719,6 +2962,40 @@ class DieselDashboard(QMainWindow):
                 QPushButton:pressed {background:#7DC49A;}
             """)
 
+        # ── CSV button ───────────────────────────────────────────────
+        if dk:
+            self.csv_btn.setStyleSheet(f"""
+                QPushButton       {{background:#0A1820;color:{PH_CYAN};
+                                    border:1px solid #122838;border-radius:7px;font-size:11px;font-weight:500;}}
+                QPushButton:hover {{background:#122838;color:{TXT_PRI};border-color:{PH_CYAN};}}
+                QPushButton:pressed {{background:#050C10;color:{TXT_PRI};}}
+            """)
+        else:
+            self.csv_btn.setStyleSheet("""
+                QPushButton       {background:#D4F0F5;color:#0A6B7A;
+                                    border:1px solid #A0D8E0;border-radius:7px;font-size:11px;font-weight:500;}
+                QPushButton:hover {background:#A0D8E0;color:#064A56;border-color:#30B0C7;}
+                QPushButton:pressed {background:#70C0CC;}
+            """)
+
+        # ── ZERO button ───────────────────────────────────────────────
+        if dk:
+            self.zero_btn.setStyleSheet(f"""
+                QPushButton       {{background:#1A1008;color:{PH_AMBER};
+                                    border:1px solid #3A2810;border-radius:7px;
+                                    font-size:11px;font-weight:600;}}
+                QPushButton:hover {{background:#2A1A0C;color:{TXT_PRI};border-color:{PH_AMBER};}}
+                QPushButton:pressed {{background:#100800;}}
+            """)
+        else:
+            self.zero_btn.setStyleSheet("""
+                QPushButton       {background:#FFF3D4;color:#7A4800;
+                                    border:1px solid #FFD980;border-radius:7px;
+                                    font-size:11px;font-weight:600;}
+                QPushButton:hover {background:#FFE9A8;color:#4A2A00;border-color:#FF9F0A;}
+                QPushButton:pressed {background:#FFDB8A;}
+            """)
+
         # ── FREEZE button ─────────────────────────────────────────────
         if dk:
             self.freeze_btn.setStyleSheet(f"""
@@ -2795,9 +3072,45 @@ class DieselDashboard(QMainWindow):
                             f"color:{new_c}; font-size:10px; font-family:monospace; border:none;")
                         break
 
-        # re-apply meter frame backgrounds
-        for frame in [self.frame_r, self.frame_p]:
+        # re-apply meter frame backgrounds (ALL boxes, not just R & P)
+        for frame in [self.frame_r, self.frame_p, self.frame_a,
+                      self.frame_inj, self.frame_engine]:
             frame.setStyleSheet(frame_ss)
+
+        # ── LCD digit displays — dark glass in dark mode, white in light ─
+        lcd_bg     = G_BG      if dk else '#FFFFFF'
+        lcd_border = '28'      if dk else '55'   # alpha on accent border
+        for lcd, accent in [(self.lcd_r, PH_PURPLE), (self.lcd_p, PH_AMBER),
+                            (self.lcd_a, PH_BLUE)]:
+            lcd.setStyleSheet(
+                f"QLCDNumber{{color:{accent}; background:{lcd_bg};"
+                f" border:1px solid {accent}{lcd_border}; border-radius:4px;}}")
+
+        # ── INJ PULSE LED off-state — light tint in light mode ──────────
+        if dk:
+            self._led_off_style = ("background:#0A1A0D; border-radius:10px;"
+                                   " border:2px solid #1A3A20;")
+        else:
+            self._led_off_style = ("background:#E8F5EC; border-radius:10px;"
+                                   " border:2px solid #BFE5CC;")
+        if not self._led_timer.isActive():       # don't override an active flash
+            self.inj_led.setStyleSheet(self._led_off_style)
+
+        # ── Auto-Reconnect checkbox — keep label readable in both modes ──
+        cb_color = TXT_SEC if dk else '#3A3A4A'
+        self.autoreconn_cb.setStyleSheet(
+            f"color:{cb_color}; font-size:10px;")
+
+        # ── Cylinder gauges — repaint with theme colors ────────────────
+        if hasattr(self, '_cylinders'):
+            for cg in self._cylinders.values():
+                cg.set_dark(dk)
+
+        # ── Calibration table — swap dark/light palette ────────────────
+        if hasattr(self, '_calib_table'):
+            self._calib_table.setStyleSheet(self._calib_table_style(dk))
+            # re-tint row backgrounds for current theme
+            self._populate_calib_table(self._active_profile)
 
     # ── actions ───────────────────────────────────────────────────────
     def _send_validated(self, cmd: str):
@@ -2828,7 +3141,15 @@ class DieselDashboard(QMainWindow):
         self.graph_paused     = False
         self._session_start   = datetime.datetime.now()
         self._session_elapsed = 0
+        # ── reset session statistics ──────────────────────────────────
         self._max_pressure    = 0.0
+        self._min_pressure    = None
+        self._sum_pressure    = 0.0
+        self._cnt_pressure    = 0
+        self._sum_rpm         = 0.0
+        self._cnt_rpm         = 0
+        self._max_rpm         = 0
+        self.total_pulses     = 0
         self.run_lbl.setText("RUNNING")
         self.run_lbl.setStyleSheet(
             f"color:{PH_GREEN}; font-family:monospace; border:none;")
@@ -2847,6 +3168,12 @@ class DieselDashboard(QMainWindow):
             f"color:{PH_RED}; font-family:monospace; border:none;")
         self.hdr_timer.setStyleSheet(
             f"color:{TXT_DIM}; font-size:11px; font-family:monospace;")
+
+    def _avg_pressure(self) -> float:
+        return self._sum_pressure / self._cnt_pressure if self._cnt_pressure else 0.0
+
+    def _avg_rpm(self) -> int:
+        return round(self._sum_rpm / self._cnt_rpm) if self._cnt_rpm else 0
 
     def _log_session(self):
         """Auto-save session to CSV log."""
@@ -2897,7 +3224,7 @@ class DieselDashboard(QMainWindow):
             if self._watchdog_stale:
                 self._watchdog_stale = False
                 port = self.port_combo.currentText()
-                self.hdr_conn.setText(f"  {port}  CONNECTED")
+                self.hdr_conn.setText(f"●  {port}  CONNECTED")
                 self.hdr_conn.setStyleSheet(
                     f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
 
@@ -2939,10 +3266,16 @@ class DieselDashboard(QMainWindow):
                 w.writerow(["Delay Angle °",  self.an_sp.value()])
                 w.writerow(["Total Pulses",   self.total_pulses])
                 w.writerow(["Session s",      self._session_elapsed])
-                w.writerow(["Max Pressure BAR", f"{self._snap_p:.1f}"])
                 w.writerow(["Avg PKT/s",      self._pkt_rate])
                 w.writerow([])
-                w.writerow(["Parameter", "Value", "Unit"])
+                w.writerow(["Session Statistics", "Min", "Avg", "Max", "Unit"])
+                _minp = self._min_pressure if self._min_pressure is not None else 0.0
+                w.writerow(["Pressure", f"{_minp:.1f}",
+                            f"{self._avg_pressure():.1f}",
+                            f"{self._max_pressure:.1f}", "BAR"])
+                w.writerow(["RPM", "—", self._avg_rpm(), self._max_rpm, "RPM"])
+                w.writerow([])
+                w.writerow(["Live Reading (at export)", "Value", "Unit"])
                 w.writerow(["Pressure",  f"{self._snap_p:.1f}", "BAR"])
                 w.writerow(["RPM",       self._snap_r,          "RPM"])
                 w.writerow(["Inj Rate",  f"{self._snap_i:.1f}", "inj/s"])
@@ -3026,19 +3359,19 @@ class DieselDashboard(QMainWindow):
         self._style_conn_btn(ok)
         if ok:
             self.conn_btn.setText("DISCONNECT")
-            self.conn_lbl.setText("  CONNECTED")
+            self.conn_lbl.setText("●  CONNECTED")
             self.conn_lbl.setStyleSheet(
                 f"color:{PH_GREEN}; font-weight:bold; font-size:11px; font-family:monospace;")
             port = self.port_combo.currentText()
-            self.hdr_conn.setText(f"  {port}  CONNECTED")
+            self.hdr_conn.setText(f"●  {port}  CONNECTED")
             self.hdr_conn.setStyleSheet(
                 f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
         else:
             self.conn_btn.setText("CONNECT")
-            self.conn_lbl.setText("o  DISCONNECTED")
+            self.conn_lbl.setText("●  DISCONNECTED")
             self.conn_lbl.setStyleSheet(
                 f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
-            self.hdr_conn.setText("o  DISCONNECTED")
+            self.hdr_conn.setText("●  DISCONNECTED")
             self.hdr_conn.setStyleSheet(
                 f"color:{PH_RED}; font-size:11px; font-family:monospace;")
             self._p_vx4_ema    = 0.0
@@ -3060,9 +3393,6 @@ class DieselDashboard(QMainWindow):
         self._last_data_time = time.time()   # watchdog timestamp
         if self.graph_paused:
             return
-        # Track peak pressure this session
-        if self._snap_p > self._max_pressure:
-            self._max_pressure = self._snap_p
         try:
             p = a = r = i = c = d = 0
             for part in raw.split(','):
@@ -3116,10 +3446,10 @@ class DieselDashboard(QMainWindow):
             if _prev_bar is None or _prev_bar == 0.0:               # warm-start: snap immediately
                 self._pressure_ema = bar
             else:
-                _slew_limit        = 3.0                             # BAR per cycle
+                _slew_limit        = 80.0                            # BAR per cycle
                 bar                = max(_prev_bar - _slew_limit,
                                      min(_prev_bar + _slew_limit, bar))
-                self._pressure_ema = 0.01 * bar + 0.99 * _prev_bar  # heavy EMA
+                self._pressure_ema = 0.20 * bar + 0.80 * _prev_bar  # fast EMA
             calibrated             = self._pressure_ema + P_CAL_OFFSET
             if self._mode_id == 1:                        # CamBox: sensor not connected
                 self._snap_p = 0.0
@@ -3164,11 +3494,28 @@ class DieselDashboard(QMainWindow):
             elif self._cam_hold > 0: self._cam_hold -= 1
 
             # Graph uses faster EMA to show dynamics; LCD uses slow EMA
-            graph_bar = max(0.0, (self._p_graph - P_VX4_ZERO_MV) * P_SLOPE_BAR_MV)
+            # Apply same CAL_OFFSET as LCD so graph and display match
+            graph_bar = max(0.0, (self._p_graph - P_VX4_ZERO_MV) * P_SLOPE_BAR_MV + P_CAL_OFFSET)
             self.pressure_buf.append(graph_bar)
             self.inj_buf.append(1.0 if (i > 0 or self._inj_hold > 0) else 0.0)
             self.cam_buf.append(1.0 if (c > 0 or self._cam_hold > 0) else 0.0)
             self._graph_dirty = True
+
+            # Track session statistics AFTER computing the new value
+            # (only while a session is actually running)
+            if self._session_start is not None:
+                if self._snap_p > self._max_pressure:
+                    self._max_pressure = self._snap_p
+                if self._snap_p > 0:
+                    if self._min_pressure is None or self._snap_p < self._min_pressure:
+                        self._min_pressure = self._snap_p
+                    self._sum_pressure += self._snap_p
+                    self._cnt_pressure += 1
+                if self._snap_r > 0:
+                    if self._snap_r > self._max_rpm:
+                        self._max_rpm = self._snap_r
+                    self._sum_rpm += self._snap_r
+                    self._cnt_rpm += 1
 
         except Exception as e:
             logging.warning(f"Parse [{raw}]: {e}")
