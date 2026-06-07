@@ -156,6 +156,14 @@ void fire_injector() {
 // ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR cambox_isr() {
     unsigned long now = micros();
+
+    // First pulse after start/reset: s_last_cam_us == 0 means there is no
+    // previous timestamp yet. The gap would otherwise be "time since boot"
+    // (a huge garbage period that poisons s_rpm_period and makes Stage-3
+    // reject every real pulse afterwards). Just seed the timestamp and wait
+    // for the next edge to measure the first real period.
+    if (s_last_cam_us == 0) { s_last_cam_us = now; return; }
+
     unsigned long gap = now - s_last_cam_us;
 
     // Stage 1: electrical debounce — rejects EMI bursts
@@ -416,6 +424,17 @@ void process_command(const String& cmd) {
         s_running      = true;
         s_armed        = false;
         s_last_fire_us = 0;
+        // Clear cam/RPM state so each run starts clean — the first cam edge
+        // re-seeds s_last_cam_us (see cambox_isr) instead of measuring a
+        // stale gap left over from the previous run.
+        noInterrupts();
+        s_rpm_wcnt    = 0;
+        s_rpm_wptr    = 0;
+        s_rpm_period  = 0;
+        s_cam_telem   = 0;
+        s_cam_fired   = false;
+        s_last_cam_us = 0;
+        interrupts();
         digitalWrite(PIN_LED, HIGH);
         Serial.println("OK:START");
 
