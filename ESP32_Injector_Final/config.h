@@ -15,7 +15,7 @@
 //  GPIO PIN MAP
 //  Hardware: TLP250 gate driver → IRFP260N MOSFET (200 V / 50 A)
 // ═════════════════════════════════════════════════════════════════════
-#define PIN_INJECTOR        5       // GPIO5  — TLP250 gate drive (P&H + RMT path)
+#define PIN_INJECTOR        23      // GPIO23 — TLP250 gate drive (P&H + RMT path)
 #define PIN_DEBUG           26      // GPIO26 — oscilloscope trigger (debug only)
 #define PIN_CAM             16      // GPIO16 — cam proximity sensor (RISING, INPUT_PULLUP)
 #define PIN_PRESSURE         4      // GPIO4  — pressure sensor ADC (0.5–4.5 V via divider)
@@ -84,8 +84,19 @@
 #define CAM_MAX_RPM         8000                // pulses/min ceiling
 #define CAM_MIN_PERIOD_US   (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
+//  Stage-3 rate-of-change ceiling (period ratio, %).
+//  160 (= 60 % jump) was too tight: manual deceleration grows the period
+//  by > 60 % in a single revolution, so legitimate pulses were rejected
+//  and the RPM glitched/halved when slowing down. 250 (= 2.5×) still
+//  rejects EMI-scale anomalies (Stage 1/2 already catch short spikes).
+#define CAM_MAX_ROC_PCT     250UL
+
 //  RPM median filter
-#define RPM_WINDOW          20                  // circular buffer depth
+//  Window trades spike-rejection vs response lag: lag ≈ RPM_WINDOW × period.
+//  20 samples @ 1000 RPM (60 ms period) ≈ 1.2 s lag — too slow to track.
+//  5 samples still rejects single-pulse spikes (median of 5) with ~4× faster
+//  response (≈ 0.3 s @ 1000 RPM).
+#define RPM_WINDOW          5                   // circular buffer depth
 #define RPM_STALE_US        2000000UL           // declare 0 RPM after 2 s
 
 // ═════════════════════════════════════════════════════════════════════
@@ -110,26 +121,9 @@
 // ═════════════════════════════════════════════════════════════════════
 //  HARDWARE WATCHDOG  (task WDT — IDF 5.x / Arduino ESP32 v3)
 //
-//  CHANGE: New — guards against loop() stalls (serial hang, OTA freeze).
+//  CHANGE: New — guards against loop() stalls (serial hang).
 //  API: esp_task_wdt_config_t + esp_task_wdt_reconfigure() (IDF5 only).
 //  Triggers panic → reboot if loop() does not call
 //  esp_task_wdt_reset() within WDT_TIMEOUT_S seconds.
 // ═════════════════════════════════════════════════════════════════════
 #define WDT_TIMEOUT_S       5       // seconds
-
-// ═════════════════════════════════════════════════════════════════════
-//  OTA  (WiFi / ArduinoOTA — remote firmware update)
-//
-//  CHANGE: New — allows flashing without physical USB access.
-//  Flash via Arduino IDE  →  Tools → Port → network port (cambox-pro-v4)
-//        or PlatformIO    →  pio run -t upload --upload-port <IP>
-//
-//  ⚠  Change WIFI_SSID / WIFI_PASS / OTA_PASSWORD before deploying.
-//  WiFi is attempted once at boot; if no AP in WIFI_TIMEOUT_MS the
-//  firmware continues with OTA disabled — serial + injection unaffected.
-// ═════════════════════════════════════════════════════════════════════
-#define WIFI_SSID           "YOUR_SSID"       // ← set before flashing
-#define WIFI_PASS           "YOUR_PASSWORD"   // ← set before flashing
-#define OTA_HOSTNAME        "cambox-pro-v4"
-#define OTA_PASSWORD        "cambox2024"      // ← change before deployment
-#define WIFI_TIMEOUT_MS     8000              // ms — abort WiFi if no AP

@@ -8,14 +8,13 @@
  *    1. config.h  — all constants centralised (no more scattered #defines)
  *    2. Hold phase — hw_timer_t polling at 1 MHz (±0.5 µs vs ±2 µs before)
  *    3. Watchdog   — esp_task_wdt_config_t (IDF5 API) guards against stalls
- *    4. OTA        — ArduinoOTA WiFi update (non-blocking in loop)
  *
  *  ARCHITECTURE:
  *  ┌─────────────────────────────────────────────────────────┐
  *  │  CAM ISR  (IRAM_ATTR, RISING)                          │
  *  │   Stage-1 debounce  → rejects EMI bursts  < 5 ms       │
  *  │   Stage-2 plausibility → rejects > 8000 RPM pulses     │
- *  │   Rolling RPM window  → stores last 8 periods           │
+ *  │   Rolling RPM window  → median of last RPM_WINDOW gaps           │
  *  │   Sets s_cam_fired flag (main loop reads)               │
  *  └──────────────────────────┬──────────────────────────────┘
  *                             │ flag
@@ -23,7 +22,6 @@
  *  ┌─────────────────────────────────────────────────────────┐
  *  │  MAIN LOOP  (purely reactive — zero blocking)          │
  *  │  esp_task_wdt_reset()   watchdog kick (V4)              │
- *  │  ArduinoOTA.handle()    OTA check     (V4)              │
  *  │  handle_serial()    read chars, parse on '\n'           │
  *  │  handle_custom()    micros() compare → fire             │
  *  │  handle_cambox()    flag + armed timer → fire           │
@@ -67,8 +65,6 @@
 
 // V4 additions
 #include "esp_task_wdt.h"       // hardware task watchdog
-#include <WiFi.h>               // OTA WiFi
-#include <ArduinoOTA.h>         // OTA update handler
 
 // ════════════════════════════════════════════════════════════════════
 //  RMT HANDLES
@@ -127,7 +123,6 @@ unsigned long  s_beep_end       = 0;
 // ════════════════════════════════════════════════════════════════════
 void rmt_init();
 void setup_watchdog();
-void setup_wifi_ota();
 void fire_injector();
 void handle_serial();
 void process_command(const String& cmd);
@@ -169,12 +164,14 @@ void IRAM_ATTR cambox_isr() {
     // Stage 2: physical plausibility — rejects implied RPM > CAM_MAX_RPM
     if (gap < CAM_MIN_PERIOD_US) return;
 
-    // Stage 3: rate-of-change — rejects > 60 % period jumps
+    // Stage 3: rate-of-change — rejects implausible period jumps.
+    // On rejection, still advance s_last_cam_us so the next valid pulse is
+    // not measured across two periods (which would double the gap → glitch).
     if (s_rpm_period > 0) {
         unsigned long ratio = (gap > s_rpm_period)
                               ? (gap * 100UL / s_rpm_period)
                               : (s_rpm_period * 100UL / gap);
-        if (ratio > 160UL) return;
+        if (ratio > CAM_MAX_ROC_PCT) { s_last_cam_us = now; return; }
     }
 
     s_rpm_period  = gap;
@@ -250,65 +247,6 @@ void setup_watchdog() {
     Serial.printf("WDT: %d s timeout OK\n", WDT_TIMEOUT_S);
 }
 
-// ════════════════════════════════════════════════════════════════════
-//  SETUP WiFi + OTA
-//  CHANGE: New — ArduinoOTA for remote firmware updates over WiFi.
-//
-//  Non-blocking design:
-//    • WiFi connect attempt is bounded by WIFI_TIMEOUT_MS.
-//    • If no AP found, returns silently — serial + injection continue.
-//    • ArduinoOTA.handle() in loop() takes < 1 µs when idle.
-//    • OTA onStart() stops injection first (safe state).
-//
-//  Flash via Arduino IDE:  Tools → Port → cambox-pro-v4 (network port)
-//         PlatformIO:  pio run -t upload --upload-port <IP>
-// ════════════════════════════════════════════════════════════════════
-void setup_wifi_ota() {
-    Serial.print("WiFi connecting");
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED &&
-           (millis() - t0) < (unsigned long)WIFI_TIMEOUT_MS) {
-        delay(200);
-        Serial.print('.');
-    }
-
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("\nWiFi timeout — OTA disabled");
-        return;
-    }
-
-    Serial.print("\nIP: ");
-    Serial.println(WiFi.localIP());
-
-    ArduinoOTA.setHostname(OTA_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-
-    ArduinoOTA.onStart([]() {
-        // Stop injection before flashing — leave pins in safe LOW state
-        s_running = false;
-        s_armed   = false;
-        INJ_LOW_OTA();   // macro defined below
-        Serial.println("OTA:START");
-    });
-    ArduinoOTA.onEnd([]() {
-        Serial.println("OTA:END");
-    });
-    ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
-        Serial.printf("OTA %u%%\n", done * 100U / total);
-    });
-    ArduinoOTA.onError([](ota_error_t e) {
-        Serial.printf("OTA ERR[%u]\n", (unsigned)e);
-        // Errors don't restart here — let the WDT handle a hung OTA
-    });
-
-    ArduinoOTA.begin();
-    Serial.printf("OTA ready: %s\n", OTA_HOSTNAME);
-}
-
-// Helper — force injector LOW from non-IRAM OTA callback
-#define INJ_LOW_OTA()  GPIO.out_w1tc = (1UL << PIN_INJECTOR)
 
 // ════════════════════════════════════════════════════════════════════
 //  SETUP
@@ -332,7 +270,11 @@ void setup() {
     digitalWrite(PIN_BUZZER, LOW);
 
     setup_watchdog();            // CHANGE: task WDT (5 s timeout, panic)
-    setup_wifi_ota();            // CHANGE: WiFi + ArduinoOTA
+
+    // Startup confirmation beep — double beep = device alive
+    beep_start(100);
+    delay(200);
+    beep_start(100);
 
     Serial.printf("INJECTOR PRO V%s - Ready\n", FW_VERSION);
 }
@@ -342,8 +284,6 @@ void setup() {
 // ════════════════════════════════════════════════════════════════════
 void loop() {
     esp_task_wdt_reset();           // CHANGE: kick watchdog every iteration
-
-    ArduinoOTA.handle();            // CHANGE: OTA check (< 1 µs when idle)
 
     handle_serial();                // parse serial commands
 
