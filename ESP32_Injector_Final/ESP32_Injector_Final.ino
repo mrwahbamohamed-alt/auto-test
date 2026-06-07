@@ -9,7 +9,7 @@
  *  │  CAM ISR  (IRAM_ATTR, RISING)                          │
  *  │   Stage-1 debounce  → rejects EMI bursts  < 5 ms       │
  *  │   Stage-2 plausibility → rejects > 8000 RPM pulses     │
- *  │   Rolling RPM window  → stores last 8 periods           │
+ *  │   Rolling RPM window  → median of last RPM_WINDOW gaps           │
  *  │   Sets s_cam_fired flag (main loop reads)               │
  *  └──────────────────────────┬──────────────────────────────┘
  *                             │ flag
@@ -88,8 +88,18 @@
 #define CAM_MAX_RPM           8000
 #define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
+// Stage-3 — rate-of-change ceiling, applied to SHORT gaps only (% of period)
+//   Rejects a pulse whose gap is < period / (ratio) — i.e. a spurious extra
+//   edge / EMI. Long gaps (deceleration, or a missed sensor pulse) are always
+//   valid, so they pass; rejecting them made CamBox skip an injection when
+//   the bench slowed down. 250 = reject gaps shorter than period / 2.5.
+#define CAM_MAX_ROC_PCT      250UL
+
 // ── RPM rolling average ──────────────────────────────────────────────
-#define RPM_WINDOW           20     // median window — larger = more robust to EMI
+//   Lag ≈ RPM_WINDOW × period. 20 @ 1000 RPM (60 ms) ≈ 1.2 s — too slow to
+//   track. 5 still rejects single-pulse spikes (median of 5) at ~4× faster
+//   response. Stage 1/2/3 already filter EMI, so the window need not be large.
+#define RPM_WINDOW            5     // median window
 #define RPM_STALE_US    2000000UL   // declare 0 RPM after 2 s silence
 
 // ════════════════════════════════════════════════════════════════════
@@ -185,15 +195,22 @@ void fire_injector() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  CAM ISR  —  IRAM, two-stage debounce
+//  CAM ISR  —  IRAM, first-edge seed + three-stage filter
 // ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR cambox_isr() {
     unsigned long now = micros();
+
+    // ── First edge after start/reset — just seed the timestamp ───────
+    //   s_last_cam_us == 0 means there is no previous edge yet. Computing
+    //   a gap here would yield "micros() since boot" — a huge garbage
+    //   period that poisons s_rpm_period and makes Stage-3 reject every
+    //   real pulse afterwards. Seed and wait for the next edge.
+    if (s_last_cam_us == 0) { s_last_cam_us = now; return; }
+
     unsigned long gap = now - s_last_cam_us;
 
     // ── Stage 1: electrical debounce ─────────────────────────────────
     //   Catches rapid EMI bursts from injector coil switching.
-    //   Any pulse arriving < 1 ms after the previous one is discarded.
     if (gap < CAM_DEBOUNCE_US) return;
 
     // ── Stage 2: physical plausibility ───────────────────────────────
@@ -201,14 +218,16 @@ void IRAM_ATTR cambox_isr() {
     //   noise (e.g. 50 Hz mains coupling or ringing on the wire).
     if (gap < CAM_MIN_PERIOD_US) return;
 
-    // ── Stage 3: rate-of-change plausibility ─────────────────────────
-    //   Reject if period jumps > 60% from the last stored period.
-    //   Catches slow EMI bursts that slip through Stage 1 & 2.
-    if (s_rpm_period > 0) {
-        unsigned long ratio = (gap > s_rpm_period)
-                              ? (gap * 100UL / s_rpm_period)
-                              : (s_rpm_period * 100UL / gap);
-        if (ratio > 160UL) return;   // > 60% jump = noise, discard
+    // ── Stage 3: rate-of-change — reject abnormally SHORT gaps only ───
+    //   A spurious extra edge / EMI shows up as a gap much shorter than
+    //   the running period. Long gaps (deceleration, or a genuinely
+    //   missed sensor pulse) are physically valid and must pass, else
+    //   CamBox skips an injection when the bench slows. On rejection,
+    //   still advance s_last_cam_us so the next valid pulse is not
+    //   measured across two periods (which would double the gap).
+    if (s_rpm_period > 0 && gap < s_rpm_period) {
+        unsigned long ratio = s_rpm_period * 100UL / gap;
+        if (ratio > CAM_MAX_ROC_PCT) { s_last_cam_us = now; return; }
     }
 
     // ── Valid pulse — update state ────────────────────────────────────
@@ -443,6 +462,17 @@ void process_command(const String& cmd) {
         s_running      = true;
         s_armed        = false;
         s_last_fire_us = 0;
+        // Clear cam/RPM state so each run starts clean — the first cam edge
+        // re-seeds s_last_cam_us (see cambox_isr) instead of measuring a
+        // stale gap left over from the previous run.
+        noInterrupts();
+        s_rpm_wcnt    = 0;
+        s_rpm_wptr    = 0;
+        s_rpm_period  = 0;
+        s_cam_telem   = 0;
+        s_cam_fired   = false;
+        s_last_cam_us = 0;
+        interrupts();
         digitalWrite(PIN_LED, HIGH);
         Serial.println("OK:START");
 
