@@ -1,8 +1,14 @@
 /**
  * ================================================================
- *  INJECTOR PRO — ESP32 Firmware  (Professional Industrial Build)
- *  Diesel Injection Test System
+ *  CamBox Pro V4  —  ESP32 Firmware  (Arduino Core v3 / IDF 5.x)
+ *  Diesel Common Rail Injector Test System
  * ================================================================
+ *
+ *  CHANGES in V4:
+ *    1. config.h  — all constants centralised (no more scattered #defines)
+ *    2. Hold phase — hw_timer_t polling at 1 MHz (±0.5 µs vs ±2 µs before)
+ *    3. Watchdog   — esp_task_wdt_config_t (IDF5 API) guards against stalls
+ *    4. OTA        — ArduinoOTA WiFi update (non-blocking in loop)
  *
  *  ARCHITECTURE:
  *  ┌─────────────────────────────────────────────────────────┐
@@ -16,6 +22,8 @@
  *                             ▼
  *  ┌─────────────────────────────────────────────────────────┐
  *  │  MAIN LOOP  (purely reactive — zero blocking)          │
+ *  │  esp_task_wdt_reset()   watchdog kick (V4)              │
+ *  │  ArduinoOTA.handle()    OTA check     (V4)              │
  *  │  handle_serial()    read chars, parse on '\n'           │
  *  │  handle_custom()    micros() compare → fire             │
  *  │  handle_cambox()    flag + armed timer → fire           │
@@ -26,90 +34,59 @@
  *                             │
  *                             ▼
  *  ┌─────────────────────────────────────────────────────────┐
- *  │  RMT TX  (hardware pulse — GPIO 23)                    │
+ *  │  RMT TX  (hardware pulse — GPIO 5)                     │
  *  │  Resolution  1 µs/tick  (1 MHz clock)                  │
  *  │  Idle level  LOW  (automatic after pulse)               │
- *  │  Non-blocking — CPU free during pulse                   │
  *  └─────────────────────────────────────────────────────────┘
  *
- *  PIN MAP:
- *    GPIO 23  Injector output      (RMT TX — do NOT use digitalWrite)
- *    GPIO 4   Pressure sensor      (ADC,  0.5–4.5 V via divider)
- *    GPIO 16  Cam Proximity sensor (Interrupt RISING, INPUT_PULLUP)
- *    GPIO 2   Status LED
- *    GPIO 15  Buzzer               (active-HIGH, pull-down 10 kΩ)
+ *  PIN MAP:  (all defined in config.h)
+ *    GPIO  5  Injector gate      (TLP250 → IRFP260N)
+ *    GPIO  4  Pressure sensor    (ADC, 0.5–4.5 V via divider)
+ *    GPIO 16  Cam proximity      (Interrupt RISING, INPUT_PULLUP)
+ *    GPIO  2  Status LED
+ *    GPIO 15  Buzzer             (active-HIGH, pull-down 10 kΩ)
+ *    GPIO 26  Debug trigger      (oscilloscope — P&H pulse edges)
  *
- *  SERIAL PROTOCOL @ 115200 baud:
+ *  SERIAL PROTOCOL @ 115200 baud (unchanged from V3):
  *    PC → ESP32:
- *      start          Start injection
- *      stop           Stop injection
- *      mode           Toggle Custom ↔ CamBox
- *      w<200-3000>    Pulse width (µs)
- *      f<1-100>       Frequency Hz  [Custom]
- *      a<0-45>        Delay angle ° [CamBox]
+ *      start              Start injection
+ *      stop               Stop injection
+ *      mode               Toggle Custom ↔ CamBox
+ *      w<200-3000>        Pulse width (µs)
+ *      f<1-100>           Frequency Hz  [Custom mode]
+ *      a<0-45>            Delay angle ° [CamBox mode]
+ *      SET_PH <p> <T> <on>  Configure Peak & Hold
  *    ESP32 → PC:
- *      P:<bar>,A:<°>,R:<rpm>,I:<inj_count>,C:<cam_count>  @ 10 ms
+ *      P:<mV>,A:<°>,R:<rpm>,I:<inj>,C:<cam>  @ 10 ms
  *
  * ================================================================
  */
 
 #include "driver/rmt_tx.h"
-#include "injector_driver.h"        // Peak & Hold — Common Rail
+#include "injector_driver.h"    // Peak & Hold — Common Rail (includes config.h)
 
-// ── Pins ─────────────────────────────────────────────────────────────
-#define PIN_INJECTOR    23
-#define PIN_PRESSURE     4
-#define PIN_CAM         16
-#define PIN_LED          2
-#define PIN_BUZZER      15
-
-// ── Pressure ADC ─────────────────────────────────────────────────────
-//   ESP32 sends raw averaged VX4 mV — all calibration done in Python
-#define P_SAMPLES  256              // rolling ADC window (256 samples ≈ max stability)
-
-// ── Injection defaults ───────────────────────────────────────────────
-#define DEF_PW_US       1000        // µs
-#define DEF_DELAY_DEG      0        // degrees
-#define DEF_FREQ_HZ       25        // Hz
-
-// ── Timing ───────────────────────────────────────────────────────────
-#define TELEMETRY_MS      10        // telemetry period
-#define DEG_FULL        360.0f
-
-// ── RMT hardware pulse ────────────────────────────────────────────────
-#define RMT_RES_HZ   1000000UL      // 1 MHz → 1 µs per tick (max PW 32 ms)
-
-// ── Cam debounce & plausibility ───────────────────────────────────────
-// Stage-1 — electrical debounce (EMI bursts arrive µs apart)
-#define CAM_DEBOUNCE_US     5000UL  // reject gaps < 5 ms (MOSFET/injector EMI)
-
-// Stage-2 — physical plausibility (max test-bench RPM)
-// At 8000 RPM: T_min = 60 000 000 / 8000 = 7 500 µs
-#define CAM_MAX_RPM           8000
-#define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
-
-// ── RPM rolling average ──────────────────────────────────────────────
-#define RPM_WINDOW           20     // median window — larger = more robust to EMI
-#define RPM_STALE_US    2000000UL   // declare 0 RPM after 2 s silence
+// V4 additions
+#include "esp_task_wdt.h"       // hardware task watchdog
+#include <WiFi.h>               // OTA WiFi
+#include <ArduinoOTA.h>         // OTA update handler
 
 // ════════════════════════════════════════════════════════════════════
 //  RMT HANDLES
 // ════════════════════════════════════════════════════════════════════
 static rmt_channel_handle_t s_rmt_chan = NULL;
 static rmt_encoder_handle_t s_rmt_enc  = NULL;
-
-static rmt_transmit_config_t k_rmt_cfg;   // initialized in rmt_init()
+static rmt_transmit_config_t k_rmt_cfg;
 
 // ════════════════════════════════════════════════════════════════════
 //  CAM / RPM STATE  (written in ISR → volatile)
 // ════════════════════════════════════════════════════════════════════
-volatile unsigned long  s_cam_time_us  = 0;    // timestamp of last valid cam pulse
-volatile unsigned long  s_last_cam_us  = 0;    // for period calculation
-volatile unsigned long  s_rpm_period   = 0;    // most-recent period (µs)
-volatile bool           s_cam_fired    = false; // consumed by handle_cambox()
-volatile int            s_cam_telem    = 0;    // pulse count for telemetry
+volatile unsigned long  s_cam_time_us  = 0;
+volatile unsigned long  s_last_cam_us  = 0;
+volatile unsigned long  s_rpm_period   = 0;
+volatile bool           s_cam_fired    = false;
+volatile int            s_cam_telem    = 0;
 
-volatile unsigned long  s_rpm_win[RPM_WINDOW]; // circular period buffer
+volatile unsigned long  s_rpm_win[RPM_WINDOW];
 volatile int            s_rpm_wptr     = 0;
 volatile int            s_rpm_wcnt     = 0;
 
@@ -120,13 +97,10 @@ bool           s_running        = false;
 int            s_pw_us          = DEF_PW_US;
 int            s_delay_deg      = DEF_DELAY_DEG;
 int            s_freq_hz        = DEF_FREQ_HZ;
-int            s_mode           = 0;            // 0=Custom  1=CamBox
+int            s_mode           = 0;          // 0=Custom  1=CamBox
 
-// CamBox armed shot
 bool           s_armed          = false;
 unsigned long  s_fire_at_us     = 0;
-
-// Custom mode last-fire reference
 unsigned long  s_last_fire_us   = 0;
 
 // ════════════════════════════════════════════════════════════════════
@@ -134,7 +108,7 @@ unsigned long  s_last_fire_us   = 0;
 // ════════════════════════════════════════════════════════════════════
 unsigned long  s_telem_last     = 0;
 String         s_serial_buf     = "";
-int            s_inj_count      = 0;    // injections this telemetry period
+int            s_inj_count      = 0;
 
 // ════════════════════════════════════════════════════════════════════
 //  PRESSURE  (background ADC — non-blocking)
@@ -152,6 +126,8 @@ unsigned long  s_beep_end       = 0;
 //  FORWARD DECLARATIONS
 // ════════════════════════════════════════════════════════════════════
 void rmt_init();
+void setup_watchdog();
+void setup_wifi_ota();
 void fire_injector();
 void handle_serial();
 void process_command(const String& cmd);
@@ -163,72 +139,59 @@ void beep_start(int ms);
 void beep_update();
 
 // ════════════════════════════════════════════════════════════════════
-//  FIRE INJECTOR  —  dispatches to P&H (Common Rail) or RMT (CamBox)
+//  FIRE INJECTOR  —  dispatches to P&H (Common Rail) or RMT
 // ════════════════════════════════════════════════════════════════════
 void fire_injector() {
-    // ── Common-Rail Peak & Hold path ──────────────────────────────────
     if (g_use_peak_hold) {
         fire_common_rail((uint32_t)s_pw_us);
         s_inj_count++;
         return;
     }
-    // ── Standard RMT flat-pulse path (CamBox / EUI / EUP) ─────────────
     static rmt_symbol_word_t sym;
     sym.level0    = 1;
-    sym.duration0 = (uint16_t)s_pw_us;   // HIGH for s_pw_us µs
+    sym.duration0 = (uint16_t)s_pw_us;
     sym.level1    = 0;
-    sym.duration1 = 0;                    // end-marker → idle LOW
-
-    rmt_transmit(s_rmt_chan, s_rmt_enc,
-                 &sym, sizeof(sym), &k_rmt_cfg);
+    sym.duration1 = 0;
+    rmt_transmit(s_rmt_chan, s_rmt_enc, &sym, sizeof(sym), &k_rmt_cfg);
     s_inj_count++;
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  CAM ISR  —  IRAM, two-stage debounce
+//  CAM ISR  —  IRAM, three-stage debounce (unchanged from V3)
 // ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR cambox_isr() {
     unsigned long now = micros();
     unsigned long gap = now - s_last_cam_us;
 
-    // ── Stage 1: electrical debounce ─────────────────────────────────
-    //   Catches rapid EMI bursts from injector coil switching.
-    //   Any pulse arriving < 1 ms after the previous one is discarded.
+    // Stage 1: electrical debounce — rejects EMI bursts
     if (gap < CAM_DEBOUNCE_US) return;
 
-    // ── Stage 2: physical plausibility ───────────────────────────────
-    //   If the implied RPM is above CAM_MAX_RPM the pulse is likely
-    //   noise (e.g. 50 Hz mains coupling or ringing on the wire).
+    // Stage 2: physical plausibility — rejects implied RPM > CAM_MAX_RPM
     if (gap < CAM_MIN_PERIOD_US) return;
 
-    // ── Stage 3: rate-of-change plausibility ─────────────────────────
-    //   Reject if period jumps > 60% from the last stored period.
-    //   Catches slow EMI bursts that slip through Stage 1 & 2.
+    // Stage 3: rate-of-change — rejects > 60 % period jumps
     if (s_rpm_period > 0) {
         unsigned long ratio = (gap > s_rpm_period)
                               ? (gap * 100UL / s_rpm_period)
                               : (s_rpm_period * 100UL / gap);
-        if (ratio > 160UL) return;   // > 60% jump = noise, discard
+        if (ratio > 160UL) return;
     }
 
-    // ── Valid pulse — update state ────────────────────────────────────
     s_rpm_period  = gap;
     s_cam_time_us = now;
     s_last_cam_us = now;
     s_cam_fired   = true;
     s_cam_telem++;
 
-    // Rolling RPM buffer (circular, newest first)
     s_rpm_win[s_rpm_wptr % RPM_WINDOW] = gap;
     s_rpm_wptr++;
     if (s_rpm_wcnt < RPM_WINDOW) s_rpm_wcnt++;
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  RMT INIT
+//  RMT INIT  (unchanged from V3 — uses PIN_INJECTOR from config.h)
 // ════════════════════════════════════════════════════════════════════
 void rmt_init() {
-    // TX channel config
     rmt_tx_channel_config_t ch_cfg;
     memset(&ch_cfg, 0, sizeof(ch_cfg));
     ch_cfg.gpio_num          = (gpio_num_t)PIN_INJECTOR;
@@ -243,7 +206,6 @@ void rmt_init() {
         return;
     }
 
-    // Copy encoder
     rmt_copy_encoder_config_t enc_cfg;
     memset(&enc_cfg, 0, sizeof(enc_cfg));
     err = rmt_new_copy_encoder(&enc_cfg, &s_rmt_enc);
@@ -258,11 +220,95 @@ void rmt_init() {
         return;
     }
 
-    // Transmit config — eot_level=0 → pin goes LOW after pulse
     memset(&k_rmt_cfg, 0, sizeof(k_rmt_cfg));
-    k_rmt_cfg.loop_count        = 0;
-    k_rmt_cfg.flags.eot_level   = 0;
+    k_rmt_cfg.loop_count       = 0;
+    k_rmt_cfg.flags.eot_level  = 0;   // pin → LOW after pulse
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  SETUP WATCHDOG
+//  CHANGE: New — IDF5 / Arduino ESP32 v3 task WDT API.
+//
+//  esp_task_wdt_config_t replaces the old esp_task_wdt_init(t, panic)
+//  signature (IDF4 / Arduino v2). Do NOT use the old two-arg form.
+//
+//  esp_task_wdt_reconfigure() adjusts the already-running system WDT
+//  (Arduino v3 enables it at boot). esp_task_wdt_add(NULL) enrolls
+//  the current task. esp_task_wdt_reset() in loop() resets the timer.
+// ════════════════════════════════════════════════════════════════════
+void setup_watchdog() {
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms     = (uint32_t)WDT_TIMEOUT_S * 1000U,
+        .idle_core_mask = 0,     // do not watch idle tasks
+        .trigger_panic  = true,  // panic + reboot on timeout
+    };
+    esp_err_t err = esp_task_wdt_reconfigure(&wdt_cfg);
+    if (err != ESP_OK) {
+        Serial.printf("WDT config err: %s\n", esp_err_to_name(err));
+    }
+    esp_task_wdt_add(NULL);     // enrol loop() task
+    Serial.printf("WDT: %d s timeout OK\n", WDT_TIMEOUT_S);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  SETUP WiFi + OTA
+//  CHANGE: New — ArduinoOTA for remote firmware updates over WiFi.
+//
+//  Non-blocking design:
+//    • WiFi connect attempt is bounded by WIFI_TIMEOUT_MS.
+//    • If no AP found, returns silently — serial + injection continue.
+//    • ArduinoOTA.handle() in loop() takes < 1 µs when idle.
+//    • OTA onStart() stops injection first (safe state).
+//
+//  Flash via Arduino IDE:  Tools → Port → cambox-pro-v4 (network port)
+//         PlatformIO:  pio run -t upload --upload-port <IP>
+// ════════════════════════════════════════════════════════════════════
+void setup_wifi_ota() {
+    Serial.print("WiFi connecting");
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           (millis() - t0) < (unsigned long)WIFI_TIMEOUT_MS) {
+        delay(200);
+        Serial.print('.');
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("\nWiFi timeout — OTA disabled");
+        return;
+    }
+
+    Serial.print("\nIP: ");
+    Serial.println(WiFi.localIP());
+
+    ArduinoOTA.setHostname(OTA_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+
+    ArduinoOTA.onStart([]() {
+        // Stop injection before flashing — leave pins in safe LOW state
+        s_running = false;
+        s_armed   = false;
+        INJ_LOW_OTA();   // macro defined below
+        Serial.println("OTA:START");
+    });
+    ArduinoOTA.onEnd([]() {
+        Serial.println("OTA:END");
+    });
+    ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+        Serial.printf("OTA %u%%\n", done * 100U / total);
+    });
+    ArduinoOTA.onError([](ota_error_t e) {
+        Serial.printf("OTA ERR[%u]\n", (unsigned)e);
+        // Errors don't restart here — let the WDT handle a hung OTA
+    });
+
+    ArduinoOTA.begin();
+    Serial.printf("OTA ready: %s\n", OTA_HOSTNAME);
+}
+
+// Helper — force injector LOW from non-IRAM OTA callback
+#define INJ_LOW_OTA()  GPIO.out_w1tc = (1UL << PIN_INJECTOR)
 
 // ════════════════════════════════════════════════════════════════════
 //  SETUP
@@ -270,57 +316,59 @@ void rmt_init() {
 void setup() {
     Serial.begin(115200);
 
-    // RMT owns PIN_INJECTOR — do NOT call pinMode on it
-    rmt_init();
-    init_debug_pin();               // GPIO26 — oscilloscope trigger for P&H
+    rmt_init();                  // RMT owns PIN_INJECTOR — no pinMode
+    init_debug_pin();            // GPIO26 output (oscilloscope trigger)
+    init_hold_timer();           // CHANGE: 1 MHz hw_timer for hold phase
 
-    pinMode(PIN_LED,      OUTPUT);
-    pinMode(PIN_BUZZER,   OUTPUT);
-    pinMode(PIN_CAM,      INPUT_PULLUP);
+    pinMode(PIN_LED,     OUTPUT);
+    pinMode(PIN_BUZZER,  OUTPUT);
+    pinMode(PIN_CAM,     INPUT_PULLUP);
 
-    // GPIO4 (ADC2 CH0) — global attenuation + resolution for reliable reading
     analogReadResolution(12);
-    analogSetAttenuation(ADC_11db);   // global: covers ADC2 pins unlike per-pin call
+    analogSetAttenuation(ADC_11db);
     pinMode(PIN_PRESSURE, INPUT);
 
     digitalWrite(PIN_LED,    LOW);
     digitalWrite(PIN_BUZZER, LOW);
 
-    // CAM interrupt starts DETACHED — default mode is Custom (s_mode=0)
-    // attachInterrupt is called only when user switches to CamBox mode
+    setup_watchdog();            // CHANGE: task WDT (5 s timeout, panic)
+    setup_wifi_ota();            // CHANGE: WiFi + ArduinoOTA
 
-    Serial.println("INJECTOR PRO - Ready");
+    Serial.printf("INJECTOR PRO V%s - Ready\n", FW_VERSION);
 }
 
 // ════════════════════════════════════════════════════════════════════
 //  MAIN LOOP  —  zero blocking, all operations return immediately
 // ════════════════════════════════════════════════════════════════════
 void loop() {
-    handle_serial();                   // 1. parse serial commands
+    esp_task_wdt_reset();           // CHANGE: kick watchdog every iteration
 
-    if (s_running) {                   // 2. injection logic
+    ArduinoOTA.handle();            // CHANGE: OTA check (< 1 µs when idle)
+
+    handle_serial();                // parse serial commands
+
+    if (s_running) {
         if (s_mode == 0) handle_custom();
         else             handle_cambox();
     }
 
-    update_pressure();                 // 3. one ADC sample
+    update_pressure();
 
-    unsigned long now_ms = millis();   // 4. telemetry
+    unsigned long now_ms = millis();
     if (now_ms - s_telem_last >= TELEMETRY_MS) {
         send_telemetry();
-        s_telem_last += TELEMETRY_MS;   // += keeps interval precise (no drift)
+        s_telem_last += TELEMETRY_MS;
     }
 
-    beep_update();                     // 5. buzzer timeout
+    beep_update();
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  CUSTOM MODE  —  fixed-frequency injection
+//  CUSTOM MODE  —  fixed-frequency injection (unchanged)
 // ════════════════════════════════════════════════════════════════════
 void handle_custom() {
     unsigned long now    = micros();
     unsigned long period = 1000000UL / (unsigned long)s_freq_hz;
-
     if ((now - s_last_fire_us) >= period) {
         s_last_fire_us = now;
         fire_injector();
@@ -329,37 +377,27 @@ void handle_custom() {
 
 // ════════════════════════════════════════════════════════════════════
 //  CAMBOX MODE  —  cam-synchronised injection with delay angle
-//
-//  Timing precision:
-//    The main loop runs in ~5–15 µs (no blocking).
-//    The armed-shot check fires within ±15 µs of the target.
-//    At 3000 RPM (T = 20 ms), 15 µs ≡ ±0.27° — well within spec.
+//  At 3000 RPM (T=20 ms), ±15 µs loop latency ≡ ±0.27° — within spec.
 // ════════════════════════════════════════════════════════════════════
 void handle_cambox() {
-    // Consume cam event
     if (s_cam_fired) {
         s_cam_fired = false;
-
         unsigned long delay_us = 0;
 
         if (s_delay_deg > 0 && s_rpm_period > 0) {
-            // Convert angle to time using the most-recent revolution period
             delay_us = (unsigned long)(
                 ((float)s_delay_deg / DEG_FULL) * (float)s_rpm_period
             );
         }
 
         if (delay_us < 20UL) {
-            // Negligible delay — fire immediately
             fire_injector();
         } else {
-            // Arm the shot: fire at cam_time + delay
             s_fire_at_us = s_cam_time_us + delay_us;
             s_armed      = true;
         }
     }
 
-    // Armed-shot check — runs every loop iteration (~5–15 µs)
     if (s_armed && (micros() >= s_fire_at_us)) {
         s_armed = false;
         fire_injector();
@@ -367,14 +405,12 @@ void handle_cambox() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  BACKGROUND PRESSURE  —  1 ADC read per loop iteration (no delay)
+//  BACKGROUND PRESSURE  —  1 ADC read per loop iteration (unchanged)
 // ════════════════════════════════════════════════════════════════════
 void update_pressure() {
     s_adc_sum += analogReadMilliVolts(PIN_PRESSURE);
     s_adc_cnt++;
-
     if (s_adc_cnt >= P_SAMPLES) {
-        // Send raw averaged VX4 mV — Python applies EMA + BAR formula
         s_pressure = (float)s_adc_sum / (float)s_adc_cnt;
         s_adc_sum  = 0;
         s_adc_cnt  = 0;
@@ -382,11 +418,9 @@ void update_pressure() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  TELEMETRY — sent every TELEMETRY_MS
-//  Format: P:<bar>,A:<°>,R:<rpm>,I:<inj>,C:<cam>
+//  TELEMETRY  (unchanged — format: P:<mV>,A:<°>,R:<rpm>,I:<inj>,C:<cam>)
 // ════════════════════════════════════════════════════════════════════
 void send_telemetry() {
-    // RPM from rolling average of last N periods
     int rpm = 0;
     unsigned long cam_age = micros() - (unsigned long)s_last_cam_us;
 
@@ -397,7 +431,6 @@ void send_telemetry() {
         for (int i = 0; i < cnt; i++) buf[i] = s_rpm_win[i];
         interrupts();
 
-        // Insertion sort → median (robust to outlier noise periods)
         for (int i = 1; i < cnt; i++) {
             unsigned long k = buf[i]; int j = i - 1;
             while (j >= 0 && buf[j] > k) { buf[j + 1] = buf[j]; j--; }
@@ -407,9 +440,8 @@ void send_telemetry() {
         if (median_period > 0) rpm = (int)(60000000UL / median_period);
     }
 
-    // Atomically snapshot and reset counters
     noInterrupts();
-    int inj       = s_inj_count;  s_inj_count = 0;
+    int inj        = s_inj_count;  s_inj_count = 0;
     int cam_pulses = s_cam_telem;  s_cam_telem = 0;
     interrupts();
 
@@ -421,7 +453,7 @@ void send_telemetry() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  SERIAL HANDLER
+//  SERIAL HANDLER  (unchanged — protocol preserved)
 // ════════════════════════════════════════════════════════════════════
 void handle_serial() {
     while (Serial.available()) {
@@ -437,7 +469,7 @@ void handle_serial() {
 }
 
 void process_command(const String& cmd) {
-    beep_start(40);   // short confirmation beep
+    beep_start(40);
 
     if (cmd == "start") {
         s_running      = true;
@@ -449,7 +481,6 @@ void process_command(const String& cmd) {
     } else if (cmd == "stop") {
         s_running = false;
         s_armed   = false;
-        // RMT pin goes LOW automatically after the current pulse ends
         digitalWrite(PIN_LED, LOW);
         Serial.println("OK:STOP");
 
@@ -460,7 +491,6 @@ void process_command(const String& cmd) {
         s_last_fire_us = 0;
 
         if (s_mode == 0) {
-            // ── Custom: detach CAM interrupt, zero all RPM state ──────
             detachInterrupt(digitalPinToInterrupt(PIN_CAM));
             noInterrupts();
             s_rpm_wcnt    = 0;
@@ -471,7 +501,6 @@ void process_command(const String& cmd) {
             s_last_cam_us = 0;
             interrupts();
         } else {
-            // ── CamBox: re-attach CAM interrupt ───────────────────────
             attachInterrupt(digitalPinToInterrupt(PIN_CAM), cambox_isr, RISING);
         }
 
@@ -506,9 +535,9 @@ void process_command(const String& cmd) {
         }
 
     } else if (cmd.startsWith("SET_PH ")) {
-        // ── SET_PH <peak_us> <period_us> <on_us> ──────────────────────
-        //    Example: SET_PH 175 40 10
-        //    Enables Peak & Hold mode and updates runtime config.
+        // SET_PH <peak_us> <period_us> <on_us>
+        // Example:  SET_PH 175 100 10   (Bosch)
+        //           SET_PH 175 100 7    (Denso)
         int sp1 = cmd.indexOf(' ', 7);
         int sp2 = (sp1 > 0) ? cmd.indexOf(' ', sp1 + 1) : -1;
         if (sp1 < 0 || sp2 < 0) {
@@ -536,7 +565,7 @@ void process_command(const String& cmd) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  BUZZER  —  non-blocking, duration-based
+//  BUZZER  —  non-blocking, duration-based (unchanged)
 // ════════════════════════════════════════════════════════════════════
 void beep_start(int ms) {
     digitalWrite(PIN_BUZZER, HIGH);
