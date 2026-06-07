@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Diesel Dashboard (Main App)",
+      "runtimeExecutable": "pythonw",
+      "runtimeArgs": ["diesel_dashboard_FINAL.py"],
+      "port": 47832
+    },
+    {
+      "name": "Auto Pro Test",
+      "runtimeExecutable": "pythonw",
+      "runtimeArgs": ["auto_pro_test.py"],
+      "port": 47833
+    },
+    {
+      "name": "Pressure Simulator (loop mode)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["pressure_simulator.py", "--mode", "loop"],
+      "port": 0
+    },
+    {
+      "name": "Pressure Simulator (COM mode)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["pressure_simulator.py", "--mode", "com", "--port", "COM5"],
+      "port": 0
+    }
+  ]
+}
