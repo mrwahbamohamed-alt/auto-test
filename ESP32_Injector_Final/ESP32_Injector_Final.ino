@@ -88,13 +88,6 @@
 #define CAM_MAX_RPM           8000
 #define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
-// Stage-3 — rate-of-change ceiling, applied to SHORT gaps only (% of period)
-//   Rejects a pulse whose gap is < period / (ratio) — i.e. a spurious extra
-//   edge / EMI. Long gaps (deceleration, or a missed sensor pulse) are always
-//   valid, so they pass; rejecting them made CamBox skip an injection when
-//   the bench slowed down. 250 = reject gaps shorter than period / 2.5.
-#define CAM_MAX_ROC_PCT      250UL
-
 // ── RPM rolling average ──────────────────────────────────────────────
 //   Lag ≈ RPM_WINDOW × period. 20 @ 1000 RPM (60 ms) ≈ 1.2 s — too slow to
 //   track. 5 still rejects single-pulse spikes (median of 5) at ~4× faster
@@ -195,7 +188,7 @@ void fire_injector() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  CAM ISR  —  IRAM, first-edge seed + three-stage filter
+//  CAM ISR  —  IRAM, first-edge seed + two-stage filter
 // ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR cambox_isr() {
     unsigned long now = micros();
@@ -203,8 +196,8 @@ void IRAM_ATTR cambox_isr() {
     // ── First edge after start/reset — just seed the timestamp ───────
     //   s_last_cam_us == 0 means there is no previous edge yet. Computing
     //   a gap here would yield "micros() since boot" — a huge garbage
-    //   period that poisons s_rpm_period and makes Stage-3 reject every
-    //   real pulse afterwards. Seed and wait for the next edge.
+    //   period that poisons s_rpm_period and skews RPM at startup.
+    //   Seed and wait for the next edge.
     if (s_last_cam_us == 0) { s_last_cam_us = now; return; }
 
     unsigned long gap = now - s_last_cam_us;
@@ -218,17 +211,11 @@ void IRAM_ATTR cambox_isr() {
     //   noise (e.g. 50 Hz mains coupling or ringing on the wire).
     if (gap < CAM_MIN_PERIOD_US) return;
 
-    // ── Stage 3: rate-of-change — reject abnormally SHORT gaps only ───
-    //   A spurious extra edge / EMI shows up as a gap much shorter than
-    //   the running period. Long gaps (deceleration, or a genuinely
-    //   missed sensor pulse) are physically valid and must pass, else
-    //   CamBox skips an injection when the bench slows. On rejection,
-    //   still advance s_last_cam_us so the next valid pulse is not
-    //   measured across two periods (which would double the gap).
-    if (s_rpm_period > 0 && gap < s_rpm_period) {
-        unsigned long ratio = s_rpm_period * 100UL / gap;
-        if (ratio > CAM_MAX_ROC_PCT) { s_last_cam_us = now; return; }
-    }
+    //   NOTE: there is intentionally NO rate-of-change stage. A bench is
+    //   spun up/down by hand, so the period legitimately changes fast in
+    //   both directions; rejecting "big jumps" dropped real pulses and made
+    //   CamBox skip injections. Stage 1/2 bound the absolute timing and the
+    //   median window (send_telemetry) smooths any single spurious sample.
 
     // ── Valid pulse — update state ────────────────────────────────────
     s_rpm_period  = gap;
