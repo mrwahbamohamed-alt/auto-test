@@ -108,6 +108,9 @@ static inline void _hold_wait_us(uint64_t us) {
 //    Fault gate runs BEFORE portDISABLE_INTERRUPTS — keeps serial alive.
 //    portDISABLE_INTERRUPTS masks ISR delivery only; flash cache stays
 //    active, so timerRead() (flash code) is callable within the block.
+//    Interrupts are masked ONLY through the peak + soft-transition phase
+//    (~375 µs, fixed) and re-enabled for the hold chop, so a long pulse no
+//    longer blocks the cam ISR / corrupts the measured RPM period.
 // ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR fire_common_rail(uint32_t total_pw_us) {
 
@@ -145,6 +148,16 @@ void IRAM_ATTR fire_common_rail(uint32_t total_pw_us) {
         _hold_wait_us(half);    // ← hardware timer ±0.5 µs
     }
 
+    // ── Critical region done → re-enable interrupts ──────────────────
+    // The masked window is now FIXED (peak + transition ≈ 375 µs) instead
+    // of growing with total_pw_us. This stops long injections from delaying
+    // the cam ISR and corrupting the measured RPM period.
+    // Safe during HOLD because the chop uses the hardware-timer wait: each
+    // ON/OFF interval ends at t0+duration regardless of an ISR firing during
+    // the spin (the pin holds its level throughout), so durations are
+    // preserved — worst case one cycle is stretched by the ~µs ISR latency.
+    portENABLE_INTERRUPTS();
+
     // ── Phase 2: HOLD — PWM chop for remaining pulse budget ──────────
     // CHANGE: was esp_rom_delay_us(on/off) — now hw_timer polling.
     const uint32_t transition_us = 2UL * period;
@@ -169,8 +182,7 @@ void IRAM_ATTR fire_common_rail(uint32_t total_pw_us) {
     }
 
     // ── Hard shutdown — pin hard LOW, no float ────────────────────────
+    // (interrupts already re-enabled after the soft transition above)
     INJ_LOW;
     DBG_LOW;    // oscilloscope: marks real pulse end
-
-    portENABLE_INTERRUPTS();
 }
