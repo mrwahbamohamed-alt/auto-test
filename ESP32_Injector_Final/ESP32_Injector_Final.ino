@@ -32,13 +32,13 @@
  *                             │
  *                             ▼
  *  ┌─────────────────────────────────────────────────────────┐
- *  │  RMT TX  (hardware pulse — GPIO 5)                     │
+ *  │  RMT TX  (hardware pulse — GPIO 23)                    │
  *  │  Resolution  1 µs/tick  (1 MHz clock)                  │
  *  │  Idle level  LOW  (automatic after pulse)               │
  *  └─────────────────────────────────────────────────────────┘
  *
  *  PIN MAP:  (all defined in config.h)
- *    GPIO  5  Injector gate      (TLP250 → IRFP260N)
+ *    GPIO 23  Injector gate      (TLP250 → IRFP260N)
  *    GPIO  4  Pressure sensor    (ADC, 0.5–4.5 V via divider)
  *    GPIO 16  Cam proximity      (Interrupt RISING, INPUT_PULLUP)
  *    GPIO  2  Status LED
