@@ -84,11 +84,11 @@
 #define CAM_MAX_RPM         8000                // pulses/min ceiling
 #define CAM_MIN_PERIOD_US   (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
-//  Stage-3 rate-of-change ceiling (period ratio, %).
-//  160 (= 60 % jump) was too tight: manual deceleration grows the period
-//  by > 60 % in a single revolution, so legitimate pulses were rejected
-//  and the RPM glitched/halved when slowing down. 250 (= 2.5×) still
-//  rejects EMI-scale anomalies (Stage 1/2 already catch short spikes).
+//  Stage-3 rate-of-change ceiling — applied to SHORT gaps only.
+//  Rejects a pulse whose gap is < (1 / ratio) of the running period, i.e.
+//  a spurious extra edge / EMI burst. Long gaps (deceleration or a missed
+//  sensor pulse) are always accepted — rejecting them made the injector
+//  skip a shot when slowing down. 250 = reject gaps shorter than period/2.5.
 #define CAM_MAX_ROC_PCT     250UL
 
 //  RPM median filter

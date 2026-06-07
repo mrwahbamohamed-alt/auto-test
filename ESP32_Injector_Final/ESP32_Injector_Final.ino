@@ -164,13 +164,14 @@ void IRAM_ATTR cambox_isr() {
     // Stage 2: physical plausibility — rejects implied RPM > CAM_MAX_RPM
     if (gap < CAM_MIN_PERIOD_US) return;
 
-    // Stage 3: rate-of-change — rejects implausible period jumps.
+    // Stage 3: rate-of-change — rejects only abnormally SHORT gaps
+    // (EMI / spurious extra edges). Long gaps are always physically valid:
+    // deceleration, or a genuinely missed sensor pulse — so they pass, which
+    // stops the injector from skipping a shot when the bench slows down.
     // On rejection, still advance s_last_cam_us so the next valid pulse is
     // not measured across two periods (which would double the gap → glitch).
-    if (s_rpm_period > 0) {
-        unsigned long ratio = (gap > s_rpm_period)
-                              ? (gap * 100UL / s_rpm_period)
-                              : (s_rpm_period * 100UL / gap);
+    if (s_rpm_period > 0 && gap < s_rpm_period) {
+        unsigned long ratio = s_rpm_period * 100UL / gap;
         if (ratio > CAM_MAX_ROC_PCT) { s_last_cam_us = now; return; }
     }
 
