@@ -1,0 +1,19 @@
+# Build output
+build/
+dist/
+dist_autotest/
+
+# PyInstaller specs (optional — remove this line if you want specs tracked)
+*.spec
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller packages/archives
+*.pyz
+*.pkg
+
+# Executables
+*.exe
