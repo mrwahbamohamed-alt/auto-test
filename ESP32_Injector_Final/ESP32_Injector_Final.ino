@@ -169,8 +169,12 @@ void beep_update();
 //  FIRE INJECTOR  —  dispatches to P&H (Common Rail) or RMT (CamBox)
 // ════════════════════════════════════════════════════════════════════
 void fire_injector() {
-    // ── Common-Rail Peak & Hold path ──────────────────────────────────
-    if (g_use_peak_hold) {
+    // ── Common-Rail Peak & Hold path — CUSTOM mode only ───────────────
+    //   P&H is intentionally disabled in CamBox: fire_common_rail blocks
+    //   with interrupts masked for the whole pulse, which would stall the
+    //   cam ISR and drop pulses. CamBox always uses the non-blocking RMT
+    //   path below, so the cam ISR is never delayed.
+    if (g_use_peak_hold && s_mode == 0) {
         fire_common_rail((uint32_t)s_pw_us);
         s_inj_count++;
         return;
