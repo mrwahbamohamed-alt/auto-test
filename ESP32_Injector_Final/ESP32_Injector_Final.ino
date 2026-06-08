@@ -132,6 +132,9 @@ unsigned long  s_fire_at_us     = 0;
 // Custom mode last-fire reference
 unsigned long  s_last_fire_us   = 0;
 
+// Refractory lockout — no new pulse may start before the current one ends
+unsigned long  s_pulse_end_us   = 0;
+
 // ════════════════════════════════════════════════════════════════════
 //  TELEMETRY / SERIAL
 // ════════════════════════════════════════════════════════════════════
@@ -169,6 +172,15 @@ void beep_update();
 //  FIRE INJECTOR  —  dispatches to P&H (Common Rail) or RMT (CamBox)
 // ════════════════════════════════════════════════════════════════════
 void fire_injector() {
+    // ── Refractory lockout — one pulse at a time ──────────────────────
+    //   Do not start a new pulse until the current one has fully elapsed.
+    //   Guarantees exactly the requested pulse width with no overlap and no
+    //   stacking in the RMT transmit queue: a trigger arriving mid-pulse is
+    //   ignored, not queued. (Wrap-safe signed compare for micros() rollover.)
+    unsigned long now = micros();
+    if ((long)(now - s_pulse_end_us) < 0) return;   // previous pulse still active
+    s_pulse_end_us = now + (unsigned long)s_pw_us;
+
     // ── Common-Rail Peak & Hold path — CUSTOM mode only ───────────────
     //   P&H is intentionally disabled in CamBox: fire_common_rail blocks
     //   with interrupts masked for the whole pulse, which would stall the
