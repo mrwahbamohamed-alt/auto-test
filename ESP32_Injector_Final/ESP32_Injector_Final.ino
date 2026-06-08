@@ -88,6 +88,14 @@
 #define CAM_MAX_RPM           8000
 #define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
 
+// Post-injection blanking — ignore cam edges for this long AFTER the injector
+// fires, to reject the EMI / reflection the injector switching couples back
+// onto the cam line. Measured from the fire instant (set in fire_injector),
+// which is later than the cam edge by the delay angle, so Stage-1 debounce
+// (measured from the edge) does not cover it. 4 ms < min real period (30 ms
+// @ 2000 RPM) so it never swallows a genuine next pulse.
+#define CAM_BLANK_US        4000UL
+
 // ── RPM rolling average ──────────────────────────────────────────────
 //   Lag ≈ RPM_WINDOW × period. 20 @ 1000 RPM (60 ms) ≈ 1.2 s — too slow to
 //   track. 5 still rejects single-pulse spikes (median of 5) at ~4× faster
@@ -111,6 +119,7 @@ volatile unsigned long  s_last_cam_us  = 0;    // for period calculation
 volatile unsigned long  s_rpm_period   = 0;    // most-recent period (µs)
 volatile bool           s_cam_fired    = false; // consumed by handle_cambox()
 volatile int            s_cam_telem    = 0;    // pulse count for telemetry
+volatile unsigned long  s_cam_blank_until_us = 0; // ignore cam edges until this time (post-fire EMI blanking)
 
 volatile unsigned long  s_rpm_win[RPM_WINDOW]; // circular period buffer
 volatile int            s_rpm_wptr     = 0;
@@ -181,6 +190,10 @@ void fire_injector() {
     if ((long)(now - s_pulse_end_us) < 0) return;   // previous pulse still active
     s_pulse_end_us = now + (unsigned long)s_pw_us;
 
+    // Arm post-injection cam blanking — reject the EMI the injector switching
+    // couples onto the cam line for the next CAM_BLANK_US (see cambox_isr).
+    s_cam_blank_until_us = now + CAM_BLANK_US;
+
     // ── Common-Rail Peak & Hold path — CUSTOM mode only ───────────────
     //   P&H is intentionally disabled in CamBox: fire_common_rail blocks
     //   with interrupts masked for the whole pulse, which would stall the
@@ -208,6 +221,13 @@ void fire_injector() {
 // ════════════════════════════════════════════════════════════════════
 void IRAM_ATTR cambox_isr() {
     unsigned long now = micros();
+
+    // ── Post-injection blanking ───────────────────────────────────────
+    //   Ignore any edge that lands within CAM_BLANK_US of the last injector
+    //   fire — that is when the injector switching couples EMI / a reflection
+    //   back onto the cam line, which would otherwise trigger a false second
+    //   pulse. (Wrap-safe signed compare for micros() rollover.)
+    if ((long)(now - s_cam_blank_until_us) < 0) return;
 
     // ── First edge after start/reset — just seed the timestamp ───────
     //   s_last_cam_us == 0 means there is no previous edge yet. Computing
