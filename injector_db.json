@@ -1,6 +1,6 @@
 {
-  "version": "2.5",
-  "notes": "Real-world Common Rail injector test parameters. rail_bar = target rail pressure (EUI/EUP: rail_bar=5 = cam-driven; HEUI: rail_bar = hydraulic actuation pressure in bar). v2.3: CAT_C15 fixes. v2.4: Added BOSCH_0445_110_OM651. v2.5: Added BOSCH_0414_MAN_ACTROS, DELPHI_E3_DAF_VOLVO, SIEMENS_VDO_SCANIA_XPI, CUMMINS_ISX_EUI, DETROIT_DD60_EUI, CAT_HEUI_C7_C9.",
+  "version": "2.6",
+  "notes": "Real-world Common Rail injector test parameters. rail_bar = target rail pressure (EUI/EUP: rail_bar=5 = cam-driven; HEUI: rail_bar = hydraulic actuation pressure in bar). v2.3: CAT_C15 fixes. v2.4: Added BOSCH_0445_110_OM651. v2.5: Added EUI/HEUI heavy-duty profiles. v2.6: Added 24V Common Rail solenoid profiles — BOSCH_0445_120_OM926, BOSCH_0445_124_MAN_D20, BOSCH_0445_125_DAF_VOLVO_HD, DENSO_095000_HINO_ISUZU, DELPHI_EJDR_DAF_RENAULT, BOSCH_0445_116_IVECO_CURSOR.",
   "cambox_profiles": {
     "Cranking": {
       "rpm": 200,
@@ -1153,6 +1153,456 @@
           "vol_min": 20.0,
           "vol_target": 27.0,
           "vol_max": 34.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "BOSCH_0445_120_OM926",
+      "brand": "Bosch",
+      "model": "0445 120 xxx",
+      "type": "Common Rail Solenoid (24V)",
+      "engine": "Mercedes OM906/OM926/OM934/OM936 (Atego/Axor/Arocs)",
+      "notes": "Bosch 0445 120 series — 24V system. Mercedes medium/heavy trucks: Atego (OM906/926), Axor (OM926), Arocs (OM934/936). Max rail 1600 bar.",
+      "safety": {
+        "max_pulse_us": 1800,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 280,
+          "pulse_us": 240,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 3.0,
+          "vol_target": 3.8,
+          "vol_max": 4.5,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 900,
+          "pulse_us": 450,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1400,
+          "vol_min": 12.0,
+          "vol_target": 15.0,
+          "vol_max": 18.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1600,
+          "pulse_us": 700,
+          "freq_hz": 9,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2500,
+          "vol_min": 28.0,
+          "vol_target": 32.0,
+          "vol_max": 36.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 900,
+          "pulse_us": 450,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1400,
+          "vol_min": 12.0,
+          "vol_target": 15.0,
+          "vol_max": 18.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "BOSCH_0445_124_MAN_D20",
+      "brand": "Bosch",
+      "model": "0445 124 xxx",
+      "type": "Common Rail Solenoid (24V)",
+      "engine": "MAN D20/D26 (TGA/TGX/TGS/TGM trucks)",
+      "notes": "Bosch 0445 124 series — 24V system. MAN heavy trucks D20 (10.5L) and D26 (12.4L). Max rail 1800 bar.",
+      "safety": {
+        "max_pulse_us": 1800,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 280,
+          "pulse_us": 230,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 700,
+          "vol_min": 3.0,
+          "vol_target": 3.8,
+          "vol_max": 4.5,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 1000,
+          "pulse_us": 420,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1300,
+          "vol_min": 11.0,
+          "vol_target": 14.0,
+          "vol_max": 17.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1800,
+          "pulse_us": 680,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2200,
+          "vol_min": 26.0,
+          "vol_target": 30.0,
+          "vol_max": 34.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 1000,
+          "pulse_us": 420,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1300,
+          "vol_min": 11.0,
+          "vol_target": 14.0,
+          "vol_max": 17.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "BOSCH_0445_125_DAF_VOLVO_HD",
+      "brand": "Bosch",
+      "model": "0445 125 xxx",
+      "type": "Common Rail Solenoid (24V)",
+      "engine": "DAF CF/XF (MX-11/MX-13), Volvo FM/FH (D11/D13)",
+      "notes": "Bosch 0445 125 series — 24V system. DAF CF/XF Euro 5/6 and Volvo FM/FH heavy trucks. Max rail 2000 bar.",
+      "safety": {
+        "max_pulse_us": 1600,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 280,
+          "pulse_us": 220,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 700,
+          "vol_min": 2.8,
+          "vol_target": 3.5,
+          "vol_max": 4.2,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 1100,
+          "pulse_us": 400,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1300,
+          "vol_min": 11.0,
+          "vol_target": 13.5,
+          "vol_max": 16.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 2000,
+          "pulse_us": 660,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2000,
+          "vol_min": 25.0,
+          "vol_target": 29.0,
+          "vol_max": 33.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 1100,
+          "pulse_us": 400,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1300,
+          "vol_min": 11.0,
+          "vol_target": 13.5,
+          "vol_max": 16.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "DENSO_095000_HINO_ISUZU",
+      "brand": "Denso",
+      "model": "095000 HD Series",
+      "type": "Common Rail Solenoid (24V)",
+      "engine": "Hino J08E/J05E, Isuzu 6HK1/4HK1, UD Trucks GH/GW",
+      "notes": "Denso 095000 heavy-duty series — 24V system. Hino 500/700 series, Isuzu Forward/Giga, UD Quon/Condor. Max rail 1800 bar.",
+      "safety": {
+        "max_pulse_us": 1600,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 260,
+          "pulse_us": 230,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 750,
+          "vol_min": 3.0,
+          "vol_target": 3.8,
+          "vol_max": 4.5,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 900,
+          "pulse_us": 380,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1400,
+          "vol_min": 10.0,
+          "vol_target": 13.0,
+          "vol_max": 16.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1800,
+          "pulse_us": 620,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2600,
+          "vol_min": 23.0,
+          "vol_target": 27.0,
+          "vol_max": 31.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 900,
+          "pulse_us": 380,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1400,
+          "vol_min": 10.0,
+          "vol_target": 13.0,
+          "vol_max": 16.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "DELPHI_EJDR_DAF_RENAULT",
+      "brand": "Delphi",
+      "model": "EJDR Series",
+      "type": "Common Rail Solenoid (24V)",
+      "engine": "DAF XE355C/XE430C, Renault DXi 11/13",
+      "notes": "Delphi EJDR series — 24V system. DAF XF105 heavy (XE430C) and Renault Trucks DXi 11/13. Max rail 1800 bar.",
+      "safety": {
+        "max_pulse_us": 1600,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 260,
+          "pulse_us": 210,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 700,
+          "vol_min": 2.5,
+          "vol_target": 3.2,
+          "vol_max": 4.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 900,
+          "pulse_us": 380,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1300,
+          "vol_min": 10.0,
+          "vol_target": 13.0,
+          "vol_max": 16.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1800,
+          "pulse_us": 620,
+          "freq_hz": 9,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2000,
+          "vol_min": 24.0,
+          "vol_target": 28.0,
+          "vol_max": 32.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 900,
+          "pulse_us": 380,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1300,
+          "vol_min": 10.0,
+          "vol_target": 13.0,
+          "vol_max": 16.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "BOSCH_0445_116_IVECO_CURSOR",
+      "brand": "Bosch",
+      "model": "0445 116 xxx",
+      "type": "Common Rail Solenoid (24V)",
+      "engine": "Iveco Cursor 9/10/13 (Stralis/Trakker/Daily 3.0/4.5)",
+      "notes": "Bosch 0445 116 series — 24V system. Iveco Stralis, Trakker, and heavy Daily. Cursor 9 (8.7L), Cursor 10 (10.3L), Cursor 13 (12.9L). Max rail 1800 bar.",
+      "safety": {
+        "max_pulse_us": 1800,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 280,
+          "pulse_us": 240,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 3.2,
+          "vol_target": 4.0,
+          "vol_max": 4.8,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 950,
+          "pulse_us": 420,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1400,
+          "vol_min": 12.0,
+          "vol_target": 15.0,
+          "vol_max": 18.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1800,
+          "pulse_us": 680,
+          "freq_hz": 9,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2400,
+          "vol_min": 27.0,
+          "vol_target": 31.0,
+          "vol_max": 35.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 950,
+          "pulse_us": 420,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1400,
+          "vol_min": 12.0,
+          "vol_target": 15.0,
+          "vol_max": 18.0,
           "vol_unit": "ml/1000"
         }
       }
