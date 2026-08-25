@@ -1,6 +1,6 @@
 {
-  "version": "2.2",
-  "notes": "Real-world Common Rail injector test parameters. rail_bar = target rail pressure.",
+  "version": "2.5",
+  "notes": "Real-world Common Rail injector test parameters. rail_bar = target rail pressure (EUI/EUP: rail_bar=5 = cam-driven; HEUI: rail_bar = hydraulic actuation pressure in bar). v2.3: CAT_C15 fixes. v2.4: Added BOSCH_0445_110_OM651. v2.5: Added BOSCH_0414_MAN_ACTROS, DELPHI_E3_DAF_VOLVO, SIEMENS_VDO_SCANIA_XPI, CUMMINS_ISX_EUI, DETROIT_DD60_EUI, CAT_HEUI_C7_C9.",
   "cambox_profiles": {
     "Cranking": {
       "rpm": 200,
@@ -35,9 +35,9 @@
     {
       "id": "BOSCH_CRI_1600_2000",
       "brand": "Bosch",
-      "model": "MAN",
+      "model": "CRI 1.6–2.0 TDI",
       "type": "Common Rail Solenoid",
-      "engine": "MAN",
+      "engine": "VW/Audi/BMW/Mercedes 1.6–2.0 TDI",
       "notes": "Bosch CRI — VW/Audi/BMW/Mercedes 1.6-2.0 TDI",
       "safety": {
         "max_pulse_us": 3000,
@@ -411,35 +411,35 @@
       "id": "CAT_C15",
       "brand": "EUI CAT",
       "model": "EUI C15",
-      "type": "1",
-      "engine": "6L",
-      "notes": "",
+      "type": "EUI",
+      "engine": "Caterpillar C15 6L",
+      "notes": "CAT C15 EUI — CamBox required. Fixed v2.3: vol order corrected, Medium vol_min typo fixed, Leak Test corrected, max_freq_hz set to match C13.",
       "safety": {
         "max_pulse_us": 2800,
-        "max_freq_hz": 0,
+        "max_freq_hz": 12,
         "max_rpm": 4000
       },
       "modes": {
         "Idle": {
           "rail_bar": 5,
           "pulse_us": 1200,
-          "freq_hz": 0,
+          "freq_hz": 3,
           "duration_s": 60,
           "delay_deg": 0,
           "rpm": 350,
-          "vol_min": 15.0,
+          "vol_min": 10.0,
           "vol_target": 13.0,
-          "vol_max": 10.0,
+          "vol_max": 15.0,
           "vol_unit": "ml/1000"
         },
         "Medium": {
           "rail_bar": 5,
           "pulse_us": 1100,
-          "freq_hz": 0,
+          "freq_hz": 5,
           "duration_s": 60,
           "delay_deg": 0,
           "rpm": 600,
-          "vol_min": 0.015,
+          "vol_min": 15.0,
           "vol_target": 20.0,
           "vol_max": 25.0,
           "vol_unit": "ml/1000"
@@ -451,9 +451,9 @@
           "duration_s": 60,
           "delay_deg": 0,
           "rpm": 900,
-          "vol_min": 35.0,
+          "vol_min": 25.0,
           "vol_target": 30.0,
-          "vol_max": 25.0,
+          "vol_max": 35.0,
           "vol_unit": "ml/1000"
         },
         "Leak Test": {
@@ -463,15 +463,15 @@
           "duration_s": 30,
           "delay_deg": 0,
           "rpm": 550,
-          "vol_min": 1.0,
+          "vol_min": 0.0,
           "vol_target": 0.0,
-          "vol_max": 0.0,
+          "vol_max": 1.0,
           "vol_unit": "ml/min"
         },
         "CamBox": {
           "rail_bar": 5,
           "pulse_us": 2800,
-          "freq_hz": 0,
+          "freq_hz": 10,
           "duration_s": 120,
           "delay_deg": 5,
           "rpm": 1100,
@@ -486,12 +486,12 @@
       "id": "CAT_EUI_C13",
       "brand": "EUI CAT",
       "model": "EUI C13",
-      "type": "2",
-      "engine": "6L",
+      "type": "EUI",
+      "engine": "Caterpillar C13 6L",
       "notes": "",
       "safety": {
         "max_pulse_us": 2800,
-        "max_freq_hz": 0,
+        "max_freq_hz": 12,
         "max_rpm": 4000
       },
       "modes": {
@@ -561,9 +561,9 @@
       "id": "BOSCH_0445_120_007",
       "brand": "Bosch",
       "model": "0445 120 007",
-      "type": "common Rail",
-      "engine": "6",
-      "notes": "",
+      "type": "Common Rail Solenoid",
+      "engine": "6-cylinder Diesel",
+      "notes": "Bosch 0445 120 007 — 6-cylinder common rail. Fixed v2.3: vol_min/vol_target populated for Medium and Full Load.",
       "safety": {
         "max_pulse_us": 2000,
         "max_freq_hz": 50,
@@ -573,7 +573,7 @@
         "Idle": {
           "rail_bar": 250,
           "pulse_us": 500,
-          "freq_hz": 0,
+          "freq_hz": 3,
           "duration_s": 60,
           "delay_deg": 0,
           "rpm": 800,
@@ -589,8 +589,8 @@
           "duration_s": 60,
           "delay_deg": 0,
           "rpm": 1500,
-          "vol_min": 0.0,
-          "vol_target": 0.0,
+          "vol_min": 7.5,
+          "vol_target": 10.0,
           "vol_max": 15.0,
           "vol_unit": "ml/1000"
         },
@@ -601,8 +601,8 @@
           "duration_s": 60,
           "delay_deg": 0,
           "rpm": 3000,
-          "vol_min": 0.0,
-          "vol_target": 0.0,
+          "vol_min": 15.0,
+          "vol_target": 20.0,
           "vol_max": 25.0,
           "vol_unit": "ml/1000"
         },
@@ -625,9 +625,534 @@
           "duration_s": 120,
           "delay_deg": 5,
           "rpm": 1500,
+          "vol_min": 7.5,
+          "vol_target": 10.0,
+          "vol_max": 15.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "BOSCH_0445_110_OM651",
+      "brand": "Bosch",
+      "model": "0445 110 xxx",
+      "type": "Common Rail Solenoid",
+      "engine": "Mercedes OM651 2.1L CDI (C/E/S-Class)",
+      "notes": "Bosch 0445 110 series — Mercedes OM651 2.1 CDI. Max rail 1800 bar.",
+      "safety": {
+        "max_pulse_us": 1500,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 250,
+          "pulse_us": 220,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 800,
+          "vol_min": 2.0,
+          "vol_target": 2.5,
+          "vol_max": 3.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 800,
+          "pulse_us": 420,
+          "freq_hz": 5,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1500,
+          "vol_min": 9.0,
+          "vol_target": 11.0,
+          "vol_max": 13.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 1450,
+          "pulse_us": 650,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 3000,
+          "vol_min": 20.0,
+          "vol_target": 23.0,
+          "vol_max": 26.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
           "vol_min": 0.0,
           "vol_target": 0.0,
-          "vol_max": 15.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 800,
+          "pulse_us": 420,
+          "freq_hz": 5,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1500,
+          "vol_min": 9.0,
+          "vol_target": 11.0,
+          "vol_max": 13.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "BOSCH_0414_MAN_ACTROS",
+      "brand": "Bosch",
+      "model": "0414 EUP Series",
+      "type": "Electronic Unit Pump (EUP)",
+      "engine": "MAN D2066/D2676, Mercedes Actros OM457/OM501",
+      "notes": "Bosch 0414 Electronic Unit Pump — cam-driven, no rail pressure. rail_bar=5 placeholder. MAN TGA/TGX/TGS, Mercedes Actros MP2/MP3.",
+      "safety": {
+        "max_pulse_us": 2800,
+        "max_freq_hz": 12,
+        "max_rpm": 1200
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 5,
+          "pulse_us": 1500,
+          "freq_hz": 3,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 350,
+          "vol_min": 12.0,
+          "vol_target": 16.0,
+          "vol_max": 20.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 5,
+          "pulse_us": 1800,
+          "freq_hz": 6,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 600,
+          "vol_min": 35.0,
+          "vol_target": 45.0,
+          "vol_max": 55.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 5,
+          "pulse_us": 2500,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 900,
+          "vol_min": 80.0,
+          "vol_target": 95.0,
+          "vol_max": 110.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 5,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 5,
+          "pulse_us": 1800,
+          "freq_hz": 6,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 600,
+          "vol_min": 35.0,
+          "vol_target": 45.0,
+          "vol_max": 55.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "DELPHI_E3_DAF_VOLVO",
+      "brand": "Delphi",
+      "model": "E1/E3 EUI Series",
+      "type": "Electronic Unit Injector (EUI)",
+      "engine": "DAF XF105 (PACCAR MX-13), Volvo FH (D13/D16)",
+      "notes": "Delphi E3 EUI — cam-driven. rail_bar=5 placeholder. Used in DAF XF105/XF106 and Volvo FH 4th gen. E1 (older) has shorter pulse widths.",
+      "safety": {
+        "max_pulse_us": 2800,
+        "max_freq_hz": 12,
+        "max_rpm": 1000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 5,
+          "pulse_us": 1000,
+          "freq_hz": 3,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 350,
+          "vol_min": 15.0,
+          "vol_target": 20.0,
+          "vol_max": 25.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 5,
+          "pulse_us": 1600,
+          "freq_hz": 6,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 600,
+          "vol_min": 40.0,
+          "vol_target": 55.0,
+          "vol_max": 70.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 5,
+          "pulse_us": 2500,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 900,
+          "vol_min": 100.0,
+          "vol_target": 120.0,
+          "vol_max": 140.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 5,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 5,
+          "pulse_us": 1600,
+          "freq_hz": 6,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 600,
+          "vol_min": 40.0,
+          "vol_target": 55.0,
+          "vol_max": 70.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "SIEMENS_VDO_SCANIA_XPI",
+      "brand": "Siemens",
+      "model": "VDO XPI",
+      "type": "Common Rail Solenoid",
+      "engine": "Scania DC13/DC16 XPI (P/G/R/S-Series)",
+      "notes": "Siemens/Continental VDO XPI — Scania eXtra high Pressure Injection system. Max rail 2200 bar. Used in Scania Euro 5/6 truck engines.",
+      "safety": {
+        "max_pulse_us": 1200,
+        "max_freq_hz": 50,
+        "max_rpm": 4000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 250,
+          "pulse_us": 200,
+          "freq_hz": 2,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 700,
+          "vol_min": 2.0,
+          "vol_target": 2.8,
+          "vol_max": 3.5,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 1100,
+          "pulse_us": 400,
+          "freq_hz": 6,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1400,
+          "vol_min": 9.0,
+          "vol_target": 11.5,
+          "vol_max": 14.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 2200,
+          "pulse_us": 600,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1800,
+          "vol_min": 22.0,
+          "vol_target": 26.0,
+          "vol_max": 30.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 100,
+          "pulse_us": 200,
+          "freq_hz": 1,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 1100,
+          "pulse_us": 400,
+          "freq_hz": 6,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1400,
+          "vol_min": 9.0,
+          "vol_target": 11.5,
+          "vol_max": 14.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "CUMMINS_ISX_EUI",
+      "brand": "Cummins",
+      "model": "ISX EUI (pre-XPI)",
+      "type": "Electronic Unit Injector (EUI)",
+      "engine": "Cummins ISX 15L (pre-2010, pre-XPI common rail)",
+      "notes": "Cummins ISX EUI — cam-driven. rail_bar=5 placeholder. Applies to pre-2010 ISX with unit injectors. Post-2010 ISX uses XPI common rail (different profile needed).",
+      "safety": {
+        "max_pulse_us": 3000,
+        "max_freq_hz": 12,
+        "max_rpm": 1200
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 5,
+          "pulse_us": 1200,
+          "freq_hz": 3,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 350,
+          "vol_min": 18.0,
+          "vol_target": 24.0,
+          "vol_max": 30.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 5,
+          "pulse_us": 1800,
+          "freq_hz": 6,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 600,
+          "vol_min": 50.0,
+          "vol_target": 65.0,
+          "vol_max": 80.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 5,
+          "pulse_us": 2800,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1000,
+          "vol_min": 160.0,
+          "vol_target": 185.0,
+          "vol_max": 210.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 5,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 5,
+          "pulse_us": 1800,
+          "freq_hz": 6,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 600,
+          "vol_min": 50.0,
+          "vol_target": 65.0,
+          "vol_max": 80.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "DETROIT_DD60_EUI",
+      "brand": "Detroit Diesel",
+      "model": "Series 60 EUI",
+      "type": "Electronic Unit Injector (EUI)",
+      "engine": "Detroit Diesel Series 60 12.7L / 14.0L (DDEC III/IV/V)",
+      "notes": "Detroit Diesel Series 60 EUI — cam-driven, Bosch EUI. rail_bar=5 placeholder. DDEC III (1993+), IV (1998+), V (2007+). 12.7L and 14.0L variants share profile; 14L may need +10% vol targets.",
+      "safety": {
+        "max_pulse_us": 3000,
+        "max_freq_hz": 12,
+        "max_rpm": 1000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 5,
+          "pulse_us": 1000,
+          "freq_hz": 3,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 350,
+          "vol_min": 20.0,
+          "vol_target": 26.0,
+          "vol_max": 32.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 5,
+          "pulse_us": 1700,
+          "freq_hz": 6,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 600,
+          "vol_min": 45.0,
+          "vol_target": 58.0,
+          "vol_max": 71.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 5,
+          "pulse_us": 2900,
+          "freq_hz": 10,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 900,
+          "vol_min": 150.0,
+          "vol_target": 175.0,
+          "vol_max": 200.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 5,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 5,
+          "pulse_us": 1700,
+          "freq_hz": 6,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 600,
+          "vol_min": 45.0,
+          "vol_target": 58.0,
+          "vol_max": 71.0,
+          "vol_unit": "ml/1000"
+        }
+      }
+    },
+    {
+      "id": "CAT_HEUI_C7_C9",
+      "brand": "Caterpillar",
+      "model": "HEUI C7/C9",
+      "type": "HEUI (Hydraulically Actuated EUI)",
+      "engine": "Caterpillar C7 7.2L / C9 8.8L",
+      "notes": "CAT HEUI — hydraulically actuated, electronically controlled. rail_bar = IAP (Injection Actuation Pressure, hydraulic oil) in bar. IAP range: 35–207 bar (500–3000 PSI). Separate hydraulic oil supply required on test bench. C7: ACERT (2003+), C9: ACERT (2004+).",
+      "safety": {
+        "max_pulse_us": 2000,
+        "max_freq_hz": 20,
+        "max_rpm": 3000
+      },
+      "modes": {
+        "Idle": {
+          "rail_bar": 35,
+          "pulse_us": 500,
+          "freq_hz": 4,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 700,
+          "vol_min": 8.0,
+          "vol_target": 11.0,
+          "vol_max": 14.0,
+          "vol_unit": "ml/1000"
+        },
+        "Medium": {
+          "rail_bar": 103,
+          "pulse_us": 900,
+          "freq_hz": 8,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 1500,
+          "vol_min": 20.0,
+          "vol_target": 27.0,
+          "vol_max": 34.0,
+          "vol_unit": "ml/1000"
+        },
+        "Full Load": {
+          "rail_bar": 207,
+          "pulse_us": 1600,
+          "freq_hz": 14,
+          "duration_s": 60,
+          "delay_deg": 0,
+          "rpm": 2600,
+          "vol_min": 45.0,
+          "vol_target": 58.0,
+          "vol_max": 72.0,
+          "vol_unit": "ml/1000"
+        },
+        "Leak Test": {
+          "rail_bar": 35,
+          "pulse_us": 0,
+          "freq_hz": 0,
+          "duration_s": 30,
+          "delay_deg": 0,
+          "rpm": 0,
+          "vol_min": 0.0,
+          "vol_target": 0.0,
+          "vol_max": 2.0,
+          "vol_unit": "ml/min"
+        },
+        "CamBox": {
+          "rail_bar": 103,
+          "pulse_us": 900,
+          "freq_hz": 8,
+          "duration_s": 120,
+          "delay_deg": 5,
+          "rpm": 1500,
+          "vol_min": 20.0,
+          "vol_target": 27.0,
+          "vol_max": 34.0,
           "vol_unit": "ml/1000"
         }
       }
