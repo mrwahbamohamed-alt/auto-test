@@ -1,6 +1,6 @@
 {
-  "version": "2.6",
-  "notes": "Real-world Common Rail injector test parameters. rail_bar = target rail pressure (EUI/EUP: rail_bar=5 = cam-driven; HEUI: rail_bar = hydraulic actuation pressure in bar). v2.3: CAT_C15 fixes. v2.4: Added BOSCH_0445_110_OM651. v2.5: Added EUI/HEUI heavy-duty profiles. v2.6: Added 24V Common Rail solenoid profiles — BOSCH_0445_120_OM926, BOSCH_0445_124_MAN_D20, BOSCH_0445_125_DAF_VOLVO_HD, DENSO_095000_HINO_ISUZU, DELPHI_EJDR_DAF_RENAULT, BOSCH_0445_116_IVECO_CURSOR.",
+  "version": "2.7",
+  "notes": "Real-world injector test parameters. rail_bar=pressure in bar (EUI/EUP: rail_bar=5 cam-driven; HEUI: hydraulic actuation pressure). v2.3-2.6: cumulative fixes and additions. v2.7: +33 profiles — Toyota/Denso 1KD/2KD/1GD/2GD/4JJ1/ZD30/YD25/4M41, Bosch 0445110/115/010 series, Siemens PSA HDi/Ford TDCi, Delphi Ford/Renault/Sprinter/GM, CAT 320D/C6.6/3126, Cummins ISB67/ISF28/ISF38/QSB67, Scania DC09, Volvo D9 EUI, Bosch OM906 EUP. Total: 54 profiles.",
   "cambox_profiles": {
     "Cranking": {
       "rpm": 200,
@@ -1605,6 +1605,534 @@
           "vol_max": 18.0,
           "vol_unit": "ml/1000"
         }
+      }
+    },
+    {
+      "id": "DENSO_095000_1KD",
+      "brand": "Denso",
+      "model": "095000-5xxx / 23670-0L010",
+      "type": "Common Rail Solenoid",
+      "engine": "Toyota 1KD-FTV 3.0 D4D (Hilux, Prado 120/150, Land Cruiser 70/200)",
+      "notes": "Denso third-gen CRI. Very common in Egypt. Typical p/n: 095000-5600, 095000-5881, 23670-30030. Max rail 1800 bar. Values typical for 163–173 hp variant.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 220, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.5,  "vol_target": 3.2,  "vol_max": 4.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 380, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1600, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 600, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3400, "vol_min": 20.0, "vol_target": 24.0, "vol_max": 28.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 380, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1600, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_2KD",
+      "brand": "Denso",
+      "model": "095000-5xxx / 23670-09380",
+      "type": "Common Rail Solenoid",
+      "engine": "Toyota 2KD-FTV 2.5 D4D (Hilux 2.5, HiAce 2.5, Fortuner 2.5)",
+      "notes": "Denso CRI for 2KD-FTV. Common in Hilux/HiAce 2.5 across Middle East. Typical p/n: 095000-5600, 095000-5881, 23670-09380. Max rail 1600 bar.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.8,  "vol_max": 3.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1600, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 560, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3600, "vol_min": 17.0, "vol_target": 20.0, "vol_max": 23.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1600, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_1GD",
+      "brand": "Denso",
+      "model": "095000-6xxx / 23670-0L110",
+      "type": "Common Rail Solenoid",
+      "engine": "Toyota 1GD-FTV 2.8 GD6 (Hilux 2.8, Fortuner 2.8, Land Cruiser Prado 2.8)",
+      "notes": "Denso 4th-gen CRI (GD series). Newer than D4D. Max rail 2000 bar. Typical p/n: 095000-6700, 095000-6701, 23670-0L110. Values estimated from published calibration guides.",
+      "safety": { "max_pulse_us": 1200, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 200, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.8,  "vol_max": 3.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 350, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1600, "vol_min": 7.0,  "vol_target": 9.5,  "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 2000, "pulse_us": 580, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3400, "vol_min": 18.0, "vol_target": 22.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 350, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1600, "vol_min": 7.0,  "vol_target": 9.5,  "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_2GD",
+      "brand": "Denso",
+      "model": "095000-6xxx / 23670-0L070",
+      "type": "Common Rail Solenoid",
+      "engine": "Toyota 2GD-FTV 2.4 (HiAce 2.4, Fortuner 2.4, Hilux 2.4)",
+      "notes": "Denso 4th-gen CRI for 2GD. Slightly smaller displacement than 1GD. Max rail 2000 bar. Values estimated from published calibration guides.",
+      "safety": { "max_pulse_us": 1200, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 195, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 1.8,  "vol_target": 2.5,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 340, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1800, "vol_min": 6.5,  "vol_target": 8.5,  "vol_max": 10.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 2000, "pulse_us": 560, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3600, "vol_min": 16.0, "vol_target": 20.0, "vol_max": 24.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 340, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1800, "vol_min": 6.5,  "vol_target": 8.5,  "vol_max": 10.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_4JJ1",
+      "brand": "Denso",
+      "model": "095000-8xxx",
+      "type": "Common Rail Solenoid",
+      "engine": "Isuzu 4JJ1 3.0 CRDi (D-Max, MU-X, Colorado)",
+      "notes": "Denso CRI for Isuzu 4JJ1 3.0L. 12V system. Common in Egypt (Isuzu D-Max pickup). Max rail 1800 bar. Typical p/n: 095000-8560, 095000-8290.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 220, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.5,  "vol_target": 3.2,  "vol_max": 4.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 380, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1600, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 580, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3200, "vol_min": 19.0, "vol_target": 23.0, "vol_max": 27.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 380, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1600, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_ZD30",
+      "brand": "Denso",
+      "model": "095000-9xxx / 16600-VM00A",
+      "type": "Common Rail Solenoid",
+      "engine": "Nissan ZD30DDTi 3.0 CRD (Patrol GR Y61, Safari, Navara D22)",
+      "notes": "Denso CRI for Nissan ZD30. Very common in Middle East (Nissan Patrol). Max rail 1600 bar. Typical p/n: 095000-9560, 16600-VM00A.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.2,  "vol_target": 3.0,  "vol_max": 3.8,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 800,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 560, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3600, "vol_min": 18.0, "vol_target": 22.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 800,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_YD25",
+      "brand": "Denso",
+      "model": "095000-6xxx / 16600-VM009",
+      "type": "Common Rail Solenoid",
+      "engine": "Nissan YD25DDTi 2.5 dCi (Navara D40, Pathfinder R51, Frontier)",
+      "notes": "Denso CRI for Nissan YD25 2.5L. Common in Middle East (Navara D40). Max rail 1800 bar. Typical p/n: 095000-6353, 095000-6350, 16600-VM009.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 215, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.2,  "vol_target": 3.0,  "vol_max": 3.8,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 370, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1600, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 580, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3600, "vol_min": 18.0, "vol_target": 22.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 370, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1600, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DENSO_095000_4M41",
+      "brand": "Denso",
+      "model": "095000-5xxx / MN135859",
+      "type": "Common Rail Solenoid",
+      "engine": "Mitsubishi 4M41 3.2 DID (Pajero V6/V8, L200, Triton)",
+      "notes": "Denso CRI for Mitsubishi 4M41 3.2L DID. Very common in Middle East (Pajero). Max rail 1800 bar. Typical p/n: 095000-5600, 095000-5800, MN135859.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 215, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.3,  "vol_target": 3.0,  "vol_max": 3.7,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 370, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 580, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3000, "vol_min": 20.0, "vol_target": 24.0, "vol_max": 28.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 370, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445110_FIAT_JTD",
+      "brand": "Bosch",
+      "model": "0445 110 xxx (Fiat/Alfa)",
+      "type": "Common Rail Solenoid",
+      "engine": "Fiat 1.9 JTD / Multijet, Alfa Romeo 1.9 JTD (Punto, Doblo, Stilo, 147, 156)",
+      "notes": "Bosch CRI2 for Fiat/Alfa 1.9 JTD Multijet. Very common in Egypt (Fiat Punto/Bravo). Max rail 1350 bar. Typical p/n: 0445110002, 0445110243.",
+      "safety": { "max_pulse_us": 1350, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 220, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 750,  "pulse_us": 350, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.0,  "vol_max": 10.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1350, "pulse_us": 500, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3000, "vol_min": 17.0, "vol_target": 19.5, "vol_max": 22.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 750,  "pulse_us": 350, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.0,  "vol_max": 10.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445110_RENAULT_K9K",
+      "brand": "Bosch",
+      "model": "0445 110 xxx (Renault K9K)",
+      "type": "Common Rail Solenoid",
+      "engine": "Renault 1.5 dCi K9K (Clio, Megane, Fluence, Kangoo, Duster, Symbol)",
+      "notes": "Bosch CRI2 for Renault K9K 1.5 dCi. Extremely common in Egypt (Renault Clio/Megane/Symbol). Max rail 1600 bar. Typical p/n: 0445110110, 0445110146, 0445110247.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 200, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 1.8,  "vol_target": 2.3,  "vol_max": 2.8,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 750,  "pulse_us": 320, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 6.5,  "vol_target": 8.0,  "vol_max": 9.5,  "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 480, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 15.0, "vol_target": 18.0, "vol_max": 21.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 750,  "pulse_us": 320, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 6.5,  "vol_target": 8.0,  "vol_max": 9.5,  "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445110_FORD_18TDCI",
+      "brand": "Bosch",
+      "model": "0445 110 xxx (Ford 1.8 TDCi)",
+      "type": "Common Rail Solenoid",
+      "engine": "Ford 1.8 TDCi FFDA/KKDA (Focus, Transit Connect, Fiesta Van)",
+      "notes": "Bosch CRI2 for Ford 1.8 TDCi. Common in Egypt (Ford Focus). Max rail 1600 bar. Typical p/n: 0445110189, 0445110315.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 800,  "pulse_us": 340, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.0,  "vol_target": 8.5,  "vol_max": 10.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 520, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3200, "vol_min": 16.0, "vol_target": 19.0, "vol_max": 22.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 800,  "pulse_us": 340, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.0,  "vol_target": 8.5,  "vol_max": 10.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445110_BMW_N47",
+      "brand": "Bosch",
+      "model": "0445 110 xxx (BMW N47)",
+      "type": "Common Rail Solenoid",
+      "engine": "BMW N47 2.0d (116d/118d/120d/318d/320d/520d E8x/E9x/F10/F30)",
+      "notes": "Bosch CRI2/CRI3 for BMW N47 2.0d. Common in Egypt. Max rail 1800 bar. Typical p/n: 0445110289, 0445110216, 0445110382.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.0,  "vol_max": 10.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 580, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3800, "vol_min": 17.0, "vol_target": 20.0, "vol_max": 23.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.0,  "vol_max": 10.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445110_VW_19TDI",
+      "brand": "Bosch",
+      "model": "0445 110 xxx (VW/Audi TDI)",
+      "type": "Common Rail Solenoid",
+      "engine": "VW/Audi 1.9/2.0 TDI CR (Golf V/VI, Passat B6/B7, A3/A4/A6 PD-CR)",
+      "notes": "Bosch CRI2 for VW/Audi 1.9/2.0 TDI common rail. Max rail 1600 bar. Typical p/n: 0445110369, 0445110418, 0445110475.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 800,  "pulse_us": 340, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 540, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 16.0, "vol_target": 19.0, "vol_max": 22.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 800,  "pulse_us": 340, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445110_HYUNDAI_CRDI",
+      "brand": "Bosch",
+      "model": "0445 110 xxx (Hyundai/Kia CRDi)",
+      "type": "Common Rail Solenoid",
+      "engine": "Hyundai/Kia 2.0 CRDi D4EA/D4HA (i30, Tucson, Santa Fe, Sportage, Sorento)",
+      "notes": "Bosch CRI2/CRI3 for Hyundai/Kia 2.0 CRDi. Common in Egypt. Max rail 1800 bar. Typical p/n: 0445110279, 0445110588.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 270,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 560, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3600, "vol_min": 17.0, "vol_target": 20.0, "vol_max": 23.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445115_OM642",
+      "brand": "Bosch",
+      "model": "0445 115 xxx",
+      "type": "Common Rail Solenoid",
+      "engine": "Mercedes OM642 3.0 V6 CDI (ML320/GL320/E320/S320 CDI W164/W211/W221)",
+      "notes": "Bosch CRI2 high-flow for OM642 V6. 3-per-bank, 6 total. Max rail 1600 bar. Typical p/n: 0445115022, 0445115023, 0445115058.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 300,  "pulse_us": 220, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 700,  "vol_min": 2.2,  "vol_target": 2.8,  "vol_max": 3.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 380, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 600, "freq_hz": 9,  "duration_s": 60,  "delay_deg": 0, "rpm": 2600, "vol_min": 20.0, "vol_target": 23.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 380, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0445010_FIAT_CRI1",
+      "brand": "Bosch",
+      "model": "0445 010 xxx (CRI1)",
+      "type": "Common Rail Solenoid",
+      "engine": "Fiat/Alfa/Lancia 1.9 JTD (Punto, Bravo, Doblo, 147, 156 older gen)",
+      "notes": "Bosch CRI1 — first-gen common rail. Lower pressure than CRI2. Max rail 1350 bar. Typical p/n: 0445010007, 0445010021. Older Fiat JTD pre-Multijet.",
+      "safety": { "max_pulse_us": 1350, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 240,  "pulse_us": 230, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 700,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.0,  "vol_target": 8.5,  "vol_max": 10.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1350, "pulse_us": 500, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3000, "vol_min": 15.0, "vol_target": 18.0, "vol_max": 21.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 700,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.0,  "vol_target": 8.5,  "vol_max": 10.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "SIEMENS_5WS40_PSA_16HDI",
+      "brand": "Siemens",
+      "model": "5WS40xxx (DV6)",
+      "type": "Common Rail Solenoid",
+      "engine": "PSA DV6 1.6 HDi (Peugeot 206/207/208/308, Citroen C3/C4, Ford Galaxy 1.6)",
+      "notes": "Siemens/Continental VDO for PSA DV6 1.6 HDi. Very common in Egypt (Peugeot 206/207). Max rail 1800 bar. Typical p/n: 5WS40149, 5WS40153, 5WS40536.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 180, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 1.8,  "vol_target": 2.2,  "vol_max": 2.8,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 320, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 6.0,  "vol_target": 7.5,  "vol_max": 9.0,  "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 520, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 14.0, "vol_target": 17.0, "vol_max": 20.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 320, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 6.0,  "vol_target": 7.5,  "vol_max": 9.0,  "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "SIEMENS_A2C_FORD_16TDCI",
+      "brand": "Siemens",
+      "model": "A2C59513556 (DLD-416)",
+      "type": "Common Rail Solenoid",
+      "engine": "Ford 1.6 TDCi DLD-416 (Focus, Fiesta, Fusion, C-Max)",
+      "notes": "Siemens/Continental VDO for Ford 1.6 TDCi. Same DV6 engine block as PSA 1.6 HDi (Ford-branded). Max rail 1800 bar. Typical p/n: A2C59513556, A2C9626480D.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 180, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 1.8,  "vol_target": 2.2,  "vol_max": 2.8,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 320, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 6.0,  "vol_target": 7.5,  "vol_max": 9.0,  "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 520, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 14.0, "vol_target": 17.0, "vol_max": 20.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 320, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 6.0,  "vol_target": 7.5,  "vol_max": 9.0,  "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "SIEMENS_9674_PSA_20HDI",
+      "brand": "Siemens",
+      "model": "9674984080 (DW10)",
+      "type": "Common Rail Solenoid",
+      "engine": "PSA DW10 2.0 HDi (Peugeot 407/508, Citroen C5, Ford S-Max/Galaxy 2.0 TDCi)",
+      "notes": "Siemens/Continental VDO for PSA DW10 2.0 HDi. Max rail 1800 bar. Typical p/n: 9674984080, 9686191080, 5WS40745.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 200, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 580, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 17.0, "vol_target": 20.0, "vol_max": 23.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DELPHI_EJDR_FORD_20TDCI",
+      "brand": "Delphi",
+      "model": "EJDR / 28xxx (Ford 2.0 TDCi)",
+      "type": "Common Rail Solenoid",
+      "engine": "Ford 2.0 TDCi Duratorq (Mondeo, Transit, Focus ST-TDCi, Land Rover Freelander 2.2)",
+      "notes": "Delphi CRI for Ford 2.0 TDCi Duratorq. Max rail 1800 bar. Typical p/n: EJDR03301D, 28277709, 28489562.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 560, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3200, "vol_min": 17.0, "vol_target": 20.0, "vol_max": 23.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DELPHI_28229873_RENAULT_23",
+      "brand": "Delphi",
+      "model": "28229873 / 28277709",
+      "type": "Common Rail Solenoid",
+      "engine": "Renault Master 2.3 dCi M9T / Opel Movano 2.3 CDTi / Nissan NV400 2.3",
+      "notes": "Delphi CRI for Renault M9T 2.3L. Max rail 2000 bar. Typical p/n: 28229873, 28277709, 28348370.",
+      "safety": { "max_pulse_us": 2000, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 220, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.2,  "vol_target": 2.8,  "vol_max": 3.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 380, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 2000, "pulse_us": 600, "freq_hz": 9,  "duration_s": 60,  "delay_deg": 0, "rpm": 3000, "vol_min": 20.0, "vol_target": 23.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 380, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DELPHI_28348370_SPRINTER_21",
+      "brand": "Delphi",
+      "model": "28348370 / 25183185",
+      "type": "Common Rail Solenoid",
+      "engine": "Mercedes Sprinter 2.1 CDI (Delphi variant) / Nissan Interstar 2.5 dCi",
+      "notes": "Delphi CRI for 2.1–2.5L van engines. Max rail 1800 bar. Typical p/n: 28348370, 25183185.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 215, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.6,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 370, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 570, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3200, "vol_min": 17.0, "vol_target": 20.0, "vol_max": 23.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 370, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 7.5,  "vol_target": 9.5,  "vol_max": 11.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "DELPHI_25183185_GM_CDTI",
+      "brand": "Delphi",
+      "model": "25183185 (GM 2.0 CDTi)",
+      "type": "Common Rail Solenoid",
+      "engine": "GM 2.0 CDTi Z20DMH/DMJ (Chevrolet Cruze diesel, Opel Astra J, Zafira)",
+      "notes": "Delphi CRI for GM 2.0 CDTi (LHD-diesel). Max rail 1800 bar. Typical p/n: 25183185, 28346624.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.5,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 560, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 16.0, "vol_target": 19.0, "vol_max": 22.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 7.0,  "vol_target": 9.0,  "vol_max": 11.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CAT_320D_CR",
+      "brand": "Caterpillar",
+      "model": "326-4700 / 387-9433",
+      "type": "Common Rail Solenoid",
+      "engine": "CAT C6.4 (320D/320D2 excavator) / C4.4 ACERT",
+      "notes": "Bosch-built CRI for CAT 320D excavator C6.4. Very common in Egypt construction. Max rail 1800 bar. Typical p/n: 326-4700, 326-4756, 387-9433.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 250, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 750,  "vol_min": 3.0,  "vol_target": 4.0,  "vol_max": 5.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 450, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 13.0, "vol_target": 16.0, "vol_max": 19.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 700, "freq_hz": 9,  "duration_s": 60,  "delay_deg": 0, "rpm": 2200, "vol_min": 28.0, "vol_target": 32.0, "vol_max": 36.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 450, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 13.0, "vol_target": 16.0, "vol_max": 19.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CAT_C66_CR",
+      "brand": "Caterpillar",
+      "model": "CAT C6.6 ACERT",
+      "type": "Common Rail Solenoid",
+      "engine": "CAT C6.6 ACERT (324D/325D/329D excavator, 930K loader)",
+      "notes": "Bosch CRI for CAT C6.6 ACERT. Max rail 1800 bar. Slightly larger than C6.4 (320D). Typical p/n: 319-0677, 320-2513.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 240, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 750,  "vol_min": 2.8,  "vol_target": 3.6,  "vol_max": 4.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 430, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 12.0, "vol_target": 15.0, "vol_max": 18.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 680, "freq_hz": 9,  "duration_s": 60,  "delay_deg": 0, "rpm": 2200, "vol_min": 26.0, "vol_target": 30.0, "vol_max": 34.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 430, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 12.0, "vol_target": 15.0, "vol_max": 18.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CAT_3126_HEUI",
+      "brand": "Caterpillar",
+      "model": "HEUI 3126B",
+      "type": "HEUI (Hydraulically Actuated EUI)",
+      "engine": "CAT 3126B 7.2L (older buses, trucks, marine — DDEC/HEUI)",
+      "notes": "CAT 3126B HEUI. rail_bar = IAP (hydraulic actuation pressure) in bar. IAP range: 35–207 bar. Requires hydraulic oil supply on bench. Pre-C7 platform.",
+      "safety": { "max_pulse_us": 2000, "max_freq_hz": 20, "max_rpm": 3000 },
+      "modes": {
+        "Idle":      { "rail_bar": 35,  "pulse_us": 600,  "freq_hz": 3,  "duration_s": 60,  "delay_deg": 0, "rpm": 700,  "vol_min": 9.0,  "vol_target": 12.0, "vol_max": 15.0, "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 103, "pulse_us": 1000, "freq_hz": 7,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 22.0, "vol_target": 29.0, "vol_max": 36.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 207, "pulse_us": 1700, "freq_hz": 12, "duration_s": 60,  "delay_deg": 0, "rpm": 2200, "vol_min": 48.0, "vol_target": 60.0, "vol_max": 72.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 35,  "pulse_us": 0,    "freq_hz": 0,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 103, "pulse_us": 1000, "freq_hz": 7,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 22.0, "vol_target": 29.0, "vol_max": 36.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CUMMINS_ISB67_CR",
+      "brand": "Cummins",
+      "model": "ISB 6.7 Common Rail",
+      "type": "Common Rail Solenoid",
+      "engine": "Cummins ISB 6.7L (Dodge Ram 2500/3500, Freightliner M2, Ford F-650)",
+      "notes": "Bosch CRI3 for Cummins ISB 6.7. Max rail 1800 bar. Typical p/n: 0445120134, 0445120238, 5263262.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 240, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 750,  "vol_min": 3.0,  "vol_target": 3.8,  "vol_max": 4.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 430, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 11.0, "vol_target": 14.0, "vol_max": 17.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 680, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 2900, "vol_min": 25.0, "vol_target": 29.0, "vol_max": 33.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 430, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 11.0, "vol_target": 14.0, "vol_max": 17.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CUMMINS_ISF28_CR",
+      "brand": "Cummins",
+      "model": "ISF 2.8",
+      "type": "Common Rail Solenoid",
+      "engine": "Cummins ISF 2.8L (Foton Tunland, light trucks, minibuses)",
+      "notes": "Bosch CRI2 for Cummins ISF 2.8. Common in Egypt (Chinese trucks/vans). Max rail 1600 bar. Typical p/n: 0445110376, 5258744.",
+      "safety": { "max_pulse_us": 1600, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 210, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.0,  "vol_target": 2.6,  "vol_max": 3.2,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1600, "vol_min": 6.5,  "vol_target": 8.5,  "vol_max": 10.5, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1600, "pulse_us": 540, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3500, "vol_min": 14.0, "vol_target": 17.0, "vol_max": 20.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 900,  "pulse_us": 360, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1600, "vol_min": 6.5,  "vol_target": 8.5,  "vol_max": 10.5, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CUMMINS_ISF38_CR",
+      "brand": "Cummins",
+      "model": "ISF 3.8",
+      "type": "Common Rail Solenoid",
+      "engine": "Cummins ISF 3.8L (light commercial trucks, Foton, BAIC, Dongfeng)",
+      "notes": "Bosch CRI2/CRI3 for Cummins ISF 3.8. Max rail 1800 bar. Typical p/n: 0445110427, 5258744. Common in Egyptian fleet trucks.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 260,  "pulse_us": 220, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 800,  "vol_min": 2.5,  "vol_target": 3.2,  "vol_max": 4.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 380, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1500, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 600, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 3200, "vol_min": 18.0, "vol_target": 22.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 380, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1500, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "CUMMINS_QSB67_CR",
+      "brand": "Cummins",
+      "model": "QSB 6.7",
+      "type": "Common Rail Solenoid",
+      "engine": "Cummins QSB 6.7L (Hitachi ZX/ZW, Komatsu PC, Case CX excavators)",
+      "notes": "Bosch CRI3 for Cummins QSB 6.7 construction. Max rail 1800 bar. Same injector family as ISB 6.7 with different calibration targets.",
+      "safety": { "max_pulse_us": 1800, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 280,  "pulse_us": 240, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 750,  "vol_min": 3.0,  "vol_target": 3.8,  "vol_max": 4.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 430, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1300, "vol_min": 11.0, "vol_target": 14.0, "vol_max": 17.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 1800, "pulse_us": 680, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 2500, "vol_min": 24.0, "vol_target": 28.0, "vol_max": 32.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 430, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1300, "vol_min": 11.0, "vol_target": 14.0, "vol_max": 17.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "SIEMENS_XPI_SCANIA_DC09",
+      "brand": "Siemens",
+      "model": "VDO XPI (DC09)",
+      "type": "Common Rail Solenoid",
+      "engine": "Scania DC09 XPI 9L (Scania P/G/R/S-Series smaller engine, buses)",
+      "notes": "Siemens/Continental VDO XPI for Scania DC09 9L. Smaller than DC13/DC16. Max rail 2000 bar. Common in Scania buses in Egypt.",
+      "safety": { "max_pulse_us": 1200, "max_freq_hz": 50, "max_rpm": 4000 },
+      "modes": {
+        "Idle":      { "rail_bar": 250,  "pulse_us": 190, "freq_hz": 2,  "duration_s": 60,  "delay_deg": 0, "rpm": 700,  "vol_min": 2.2,  "vol_target": 2.8,  "vol_max": 3.5,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 1000, "pulse_us": 370, "freq_hz": 5,  "duration_s": 60,  "delay_deg": 0, "rpm": 1400, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 2000, "pulse_us": 550, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 1900, "vol_min": 18.0, "vol_target": 22.0, "vol_max": 26.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 100,  "pulse_us": 200, "freq_hz": 1,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,  "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 1000, "pulse_us": 370, "freq_hz": 5,  "duration_s": 120, "delay_deg": 5, "rpm": 1400, "vol_min": 8.0,  "vol_target": 10.0, "vol_max": 12.0, "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "VOLVO_D9_EUI",
+      "brand": "Volvo",
+      "model": "D9 EUI (Delphi)",
+      "type": "Electronic Unit Injector (EUI)",
+      "engine": "Volvo D9 9L (FH12/FM9 older gen trucks, B9R bus)",
+      "notes": "Delphi EUI for Volvo D9. Cam-driven; rail_bar=5 placeholder. Similar family to DAF/Volvo E3 but smaller. Values estimated from workshop manuals.",
+      "safety": { "max_pulse_us": 2800, "max_freq_hz": 12, "max_rpm": 1000 },
+      "modes": {
+        "Idle":      { "rail_bar": 5, "pulse_us": 900,  "freq_hz": 3,  "duration_s": 60,  "delay_deg": 0, "rpm": 350,  "vol_min": 14.0,  "vol_target": 19.0,  "vol_max": 24.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 5, "pulse_us": 1500, "freq_hz": 6,  "duration_s": 60,  "delay_deg": 0, "rpm": 600,  "vol_min": 38.0,  "vol_target": 50.0,  "vol_max": 62.0,  "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 5, "pulse_us": 2400, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 900,  "vol_min": 115.0, "vol_target": 135.0, "vol_max": 155.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 5, "pulse_us": 0,    "freq_hz": 0,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,   "vol_target": 0.0,   "vol_max": 2.0,   "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 5, "pulse_us": 1500, "freq_hz": 6,  "duration_s": 120, "delay_deg": 5, "rpm": 600,  "vol_min": 38.0,  "vol_target": 50.0,  "vol_max": 62.0,  "vol_unit": "ml/1000" }
+      }
+    },
+    {
+      "id": "BOSCH_0414_OM906_EUP",
+      "brand": "Bosch",
+      "model": "0414 EUP (OM906)",
+      "type": "Electronic Unit Pump (EUP)",
+      "engine": "Mercedes OM906 LA 6.4L (Atego 1228/1530/1828, Vario, Unimog U400/U500)",
+      "notes": "Bosch 0414 Electronic Unit Pump for Mercedes OM906. Cam-driven; rail_bar=5 placeholder. Lighter than OM457/OM501 (Actros). Max RPM limited by cam drive.",
+      "safety": { "max_pulse_us": 2800, "max_freq_hz": 12, "max_rpm": 1200 },
+      "modes": {
+        "Idle":      { "rail_bar": 5, "pulse_us": 1300, "freq_hz": 3,  "duration_s": 60,  "delay_deg": 0, "rpm": 350,  "vol_min": 10.0, "vol_target": 14.0, "vol_max": 18.0,  "vol_unit": "ml/1000" },
+        "Medium":    { "rail_bar": 5, "pulse_us": 1600, "freq_hz": 6,  "duration_s": 60,  "delay_deg": 0, "rpm": 600,  "vol_min": 30.0, "vol_target": 40.0, "vol_max": 50.0,  "vol_unit": "ml/1000" },
+        "Full Load": { "rail_bar": 5, "pulse_us": 2300, "freq_hz": 10, "duration_s": 60,  "delay_deg": 0, "rpm": 900,  "vol_min": 75.0, "vol_target": 90.0, "vol_max": 105.0, "vol_unit": "ml/1000" },
+        "Leak Test": { "rail_bar": 5, "pulse_us": 0,    "freq_hz": 0,  "duration_s": 30,  "delay_deg": 0, "rpm": 0,    "vol_min": 0.0,  "vol_target": 0.0,  "vol_max": 2.0,   "vol_unit": "ml/min"  },
+        "CamBox":    { "rail_bar": 5, "pulse_us": 1600, "freq_hz": 6,  "duration_s": 120, "delay_deg": 5, "rpm": 600,  "vol_min": 30.0, "vol_target": 40.0, "vol_max": 50.0,  "vol_unit": "ml/1000" }
       }
     }
   ]
