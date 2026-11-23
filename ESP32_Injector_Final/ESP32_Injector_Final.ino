@@ -1,309 +1,475 @@
 /**
- * ================================================================
- *  INJECTOR PRO — ESP32 Firmware  (Professional Industrial Build)
- *  Diesel Injection Test System
- * ================================================================
+ * ============================================================================
+ *  CamBox Pro — ESP32 Diesel Pump / Injector Test System  (3-coil build)
+ * ============================================================================
  *
- *  ARCHITECTURE:
- *  ┌─────────────────────────────────────────────────────────┐
- *  │  CAM ISR  (IRAM_ATTR, RISING)                          │
- *  │   Stage-1 debounce  → rejects EMI bursts  < 5 ms       │
- *  │   Stage-2 plausibility → rejects > 8000 RPM pulses     │
- *  │   Rolling RPM window  → median of last RPM_WINDOW gaps           │
- *  │   Sets s_cam_fired flag (main loop reads)               │
- *  └──────────────────────────┬──────────────────────────────┘
- *                             │ flag
- *                             ▼
- *  ┌─────────────────────────────────────────────────────────┐
- *  │  MAIN LOOP  (purely reactive — zero blocking)          │
- *  │  handle_serial()    read chars, parse on '\n'           │
- *  │  handle_custom()    micros() compare → fire             │
- *  │  handle_cambox()    flag + armed timer → fire           │
- *  │  update_pressure()  1 ADC sample / iteration            │
- *  │  send_telemetry()   every 10 ms                         │
- *  │  beep_update()      non-blocking buzzer                 │
- *  └──────────────────────────┬──────────────────────────────┘
- *                             │
- *                             ▼
- *  ┌─────────────────────────────────────────────────────────┐
- *  │  RMT TX  (hardware pulse — GPIO 23)                    │
- *  │  Resolution  1 µs/tick  (1 MHz clock)                  │
- *  │  Idle level  LOW  (automatic after pulse)               │
- *  │  Non-blocking — CPU free during pulse                   │
- *  └─────────────────────────────────────────────────────────┘
+ *  ⚠ HARDWARE STATUS: pin-out below is the target board. This firmware compiles
+ *    against arduino-esp32 v3.x / IDF 5.x but has NOT been bench-verified. Set
+ *    PSCALE from your sensor datasheet and confirm GPIO14 stays within 0–3.3 V
+ *    before trusting pressure readings.
  *
- *  PIN MAP:
- *    GPIO 23  Injector output      (RMT TX — do NOT use digitalWrite)
- *    GPIO 4   Pressure sensor      (ADC,  0.5–4.5 V via divider)
- *    GPIO 16  Cam Proximity sensor (Interrupt RISING, INPUT_PULLUP)
- *    GPIO 2   Status LED
- *    GPIO 15  Buzzer               (active-HIGH, pull-down 10 kΩ)
+ *  ── THREE PEAK & HOLD CHANNELS ────────────────────────────────────────────
+ *    Coil1 (GPIO18), Coil2 (GPIO23) and Coil3 (GPIO4) are independent P&H
+ *    outputs, each enabled/disabled from the dashboard. Coil1 doubles as the
+ *    diesel-pump valve/solenoid (Metering Valve / SCV / PCV) in PUMP mode. No
+ *    LCD, no keypad — all control is via the Python serial dashboard.
  *
- *  SERIAL PROTOCOL @ 115200 baud:
- *    PC → ESP32:
- *      start          Start injection
- *      stop           Stop injection
- *      mode           Toggle Custom ↔ CamBox
- *      w<200-3000>    Pulse width (µs)
- *      f<1-100>       Frequency Hz  [Custom]
- *      a<0-45>        Delay angle ° [CamBox]
- *    ESP32 → PC:
- *      P:<bar>,A:<°>,R:<rpm>,I:<inj_count>,C:<cam_count>  @ 10 ms
+ *    On boot only Coil1 is ENABLED (the pre-3-coil behaviour) and nothing
+ *    fires until `start`. Coil2/Coil3 boot DISABLED.
  *
- * ================================================================
+ *  ── PIN ASSIGNMENTS ───────────────────────────────────────────────────────
+ *    GPIO5   Proximity sensor   (cam trigger — 1 pulse/rev, RISING)
+ *    GPIO18  Coil1 PWM          (P&H; also the SCV/PCV valve in PUMP mode)
+ *    GPIO23  Coil2 PWM          (P&H)
+ *    GPIO4   Coil3 PWM          (P&H)
+ *    GPIO14  Pressure sensor    (ADC — LM358 conditioned)
+ *    GPIO15  Buzzer
+ *    GPIO26  Debug timing pin   (oscilloscope)
+ *
+ *  ── MODES ─────────────────────────────────────────────────────────────────
+ *    CAM  : proximity-synced Peak & Hold shot on every ENABLED coil.
+ *           Angle→delay recomputed EVERY revolution; fired by esp_timer
+ *           one-shot. GPIO26 = HIGH at ISR, LOW at fire (delay marker).
+ *           If no cam signal is present, the coils free-run at f Hz so a
+ *           solenoid can be bench-pulsed without a spinning cam.
+ *    PUMP : closed-loop pressure control. PID (100 Hz) sets the PWM duty on
+ *           GPIO18 (LEDC, default 1 kHz) from the GPIO14 pressure feedback.
+ *           Coil1 is owned by the PID loop here and is NEVER P&H fired;
+ *           Coil2/Coil3 still fire normally if enabled.
+ *
+ *  ── BLOCKING BUDGET (multi-coil) ──────────────────────────────────────────
+ *    fire_peak_hold_pin() masks interrupts for the whole pulse. Coils fire
+ *    sequentially, so a shot costs (enabled coils) × pw_us, e.g. 3 × 1000 µs
+ *    = 3 ms per revolution. Interrupts are re-enabled between coils, but at
+ *    3000 RPM (20 ms/rev) that is still ~15 % of the revolution masked and
+ *    serial telemetry can stutter. Keep pw modest when running all three.
+ *
+ *  ── SERIAL @ 115200 ───────────────────────────────────────────────────────
+ *    start | stop | w<us> | f<Hz> | a<deg> | mode
+ *    SET_PH <peak_us> <hold_on_us> <hold_off_us>   (peak 50..800, chop 50..500 µs)
+ *    PEAK <us>                 — set only the peak phase (50..800 µs); hold kept
+ *    TARGET_P <bar> | PID <Kp> <Ki> <Kd> | PSCALE <v0> <vmax> <pmax>
+ *    PCV_FREQ <hz> | STATUS
+ *    COIL <1|2|3|ALL> ON|OFF   — enable/disable a channel
+ *    FIRE <1|2|3> [<us>]       — one Peak & Hold shot (optional per-shot width µs)
+ *    COILS                     — report enable mask as COILS:<c1>,<c2>,<c3>
+ *    RELAY ON|OFF              — MANUAL GPIO19 Peak-supply relay (12 V ↔ 28 V)
+ *    RELAY                     — report relay state as RELAY:<0|1>
+ *    SHOT <us>                 — one precise plain valve pulse, 500..5000 µs
+ *    SHOT                      — repeat the last SHOT duration
+ *    SQFIRE <n> <us>           — one SQUARE pulse on any coil, ANY width 50..100000
+ *    SQMODE ON|OFF             — global: FIRE + CRUN fire SQUARE (100% duty)
+ *                                instead of Peak & Hold. Strongest possible pulse.
+ *    HARD <n> <us>             — alias of SQFIRE with the P&H 100..5000 µs range
+ *    MAXPOWER ON|OFF           — alias of SQMODE (both names read/write the same flag)
+ *    CFREQ <n> <hz>            — set coil n's own free-run frequency (1..20)
+ *    CPW <n> <us>              — set coil n's own P&H pulse width (100..5000)
+ *    CRUN <n> [<ms>]           — run coil n at its freq/width for <ms> (0/omit = ∞)
+ *    CSTOP <n|ALL>             — stop coil n's runner
+ *    CINFO                     — CINFO:<f1..3>,<pw1..3>,<run1..3>
+ *    (while running: CPULSES:<c1>,<c2>,<c3> live pulse counts at 10 Hz)
+ *
+ *  ── HARDWARE ENVELOPE (24 V via RELAY ON) ─────────────────────────────────
+ *    Series ballast ~0.5 Ω on the coil cable, coil ~0.3–0.5 Ω → peak current
+ *    ~25–30 A during the 350 µs PEAK, then the 10 kHz HOLD cuts the average.
+ *    Per-channel MOSFET = IRFP260N (50 A cont / 200 A pulse, Rds~0.04 Ω) — easy
+ *    for ~30 A peak, but heatsink it for continuous runs. ONE coil fires at a
+ *    time, so there is no simultaneous multi-coil draw. The thermal limit is the
+ *    BALLAST RESISTOR (25 W) and the COIL, not the MOSFET — higher frequency or
+ *    wider pw = more average heat, so keep pw modest at high freq.
+ *
+ *  Peak & Hold hold-chop is fixed at 10 kHz (see injector_driver.h) to prevent
+ *  coil overheating.
+ * ============================================================================
  */
 
-#include "driver/rmt_tx.h"
-#include "injector_driver.h"        // Peak & Hold — Common Rail
+#include "esp_timer.h"
+#include "esp_rom_sys.h"     // esp_rom_delay_us — safe blocking µs delay
+#include "injector_driver.h"
 
 // ── Pins ─────────────────────────────────────────────────────────────
-#define PIN_INJECTOR    23
-#define PIN_PRESSURE     4
-#define PIN_CAM         16
-#define PIN_LED          2
-#define PIN_BUZZER      15
+#define PIN_PROX      5
+#define PIN_COIL      COIL1_PIN    // GPIO18 — Coil1, also the PCV/LEDC valve
+#define PIN_PRESSURE  14
+#define PIN_BUZZER    15
+#define PIN_RELAY     19           // X6 — 12 V / 28 V Peak-supply select (MANUAL)
 
-// ── Pressure ADC ─────────────────────────────────────────────────────
-//   ESP32 sends raw averaged VX4 mV — all calibration done in Python
-#define P_SAMPLES  256              // rolling ADC window (256 samples ≈ max stability)
+// ── Modes ────────────────────────────────────────────────────────────
+#define MODE_CAM   0
+#define MODE_PUMP  1
 
-// ── Injection defaults ───────────────────────────────────────────────
-#define DEF_PW_US       1000        // µs
-#define DEF_DELAY_DEG      0        // degrees
-#define DEF_FREQ_HZ       25        // Hz
+// ── Defaults ─────────────────────────────────────────────────────────
+#define DEF_PW_US     1000
+#define DEF_ANGLE_DEG    0
+#define DEF_FREQ_HZ     10        // must stay ≤ CFREQ_MAX (20 Hz cap)
+#define DEG_FULL     360.0f
 
-// ── Timing ───────────────────────────────────────────────────────────
-#define TELEMETRY_MS      10        // telemetry period
-#define DEG_FULL        360.0f
+// ── Cam filtering (proven on V4) ─────────────────────────────────────
+#define CAM_DEBOUNCE_US   5000UL
+#define CAM_MAX_RPM       8000
+#define CAM_MIN_PERIOD_US (60000000UL / CAM_MAX_RPM)
+#define RPM_WINDOW        5
+#define RPM_STALE_US      2000000UL
 
-// ── RMT hardware pulse ────────────────────────────────────────────────
-#define RMT_RES_HZ   1000000UL      // 1 MHz → 1 µs per tick (max PW 32 ms)
-
-// ── Cam debounce & plausibility ───────────────────────────────────────
-// Stage-1 — electrical debounce (EMI bursts arrive µs apart)
-#define CAM_DEBOUNCE_US     5000UL  // reject gaps < 5 ms (MOSFET/injector EMI)
-
-// Stage-2 — physical plausibility (max test-bench RPM)
-// At 8000 RPM: T_min = 60 000 000 / 8000 = 7 500 µs
-#define CAM_MAX_RPM           8000
-#define CAM_MIN_PERIOD_US  (60000000UL / CAM_MAX_RPM)  // 7 500 µs
-
-// Post-injection blanking — ignore cam edges for this long AFTER the injector
-// fires, to reject the EMI / reflection the injector switching couples back
-// onto the cam line. Measured from the fire instant (set in fire_injector),
-// which is later than the cam edge by the delay angle, so Stage-1 debounce
-// (measured from the edge) does not cover it. 4 ms < min real period (30 ms
-// @ 2000 RPM) so it never swallows a genuine next pulse.
-#define CAM_BLANK_US        4000UL
-
-// ── RPM rolling average ──────────────────────────────────────────────
-//   Lag ≈ RPM_WINDOW × period. 20 @ 1000 RPM (60 ms) ≈ 1.2 s — too slow to
-//   track. 5 still rejects single-pulse spikes (median of 5) at ~4× faster
-//   response. Stage 1/2/3 already filter EMI, so the window need not be large.
-#define RPM_WINDOW            5     // median window
-#define RPM_STALE_US    2000000UL   // declare 0 RPM after 2 s silence
+// ── PID / pressure timing ────────────────────────────────────────────
+#define PID_DT_MS         10          // 100 Hz
+#define PCV_LOG_MS        100
+#define TELEM_MS          10
 
 // ════════════════════════════════════════════════════════════════════
-//  RMT HANDLES
+//  CAM / RPM STATE  (ISR-written → volatile)
 // ════════════════════════════════════════════════════════════════════
-static rmt_channel_handle_t s_rmt_chan = NULL;
-static rmt_encoder_handle_t s_rmt_enc  = NULL;
+volatile uint64_t s_last_trigger_us = 0;
+volatile uint64_t s_period_us       = 0;
+volatile uint64_t s_fire_delay_us   = 0;
+volatile uint32_t s_rev_count       = 0;
+volatile bool     s_cam_seeded      = false;
 
-static rmt_transmit_config_t k_rmt_cfg;   // initialized in rmt_init()
-
-// ════════════════════════════════════════════════════════════════════
-//  CAM / RPM STATE  (written in ISR → volatile)
-// ════════════════════════════════════════════════════════════════════
-volatile unsigned long  s_cam_time_us  = 0;    // timestamp of last valid cam pulse
-volatile unsigned long  s_last_cam_us  = 0;    // for period calculation
-volatile unsigned long  s_rpm_period   = 0;    // most-recent period (µs)
-volatile bool           s_cam_fired    = false; // consumed by handle_cambox()
-volatile int            s_cam_telem    = 0;    // pulse count for telemetry
-volatile unsigned long  s_cam_blank_until_us = 0; // ignore cam edges until this time (post-fire EMI blanking)
-
-volatile unsigned long  s_rpm_win[RPM_WINDOW]; // circular period buffer
-volatile int            s_rpm_wptr     = 0;
-volatile int            s_rpm_wcnt     = 0;
+volatile uint64_t s_rpm_win[RPM_WINDOW];
+volatile int      s_rpm_wptr = 0;
+volatile int      s_rpm_wcnt = 0;
 
 // ════════════════════════════════════════════════════════════════════
-//  INJECTION STATE
+//  RUN STATE
 // ════════════════════════════════════════════════════════════════════
-bool           s_running        = false;
-int            s_pw_us          = DEF_PW_US;
-int            s_delay_deg      = DEF_DELAY_DEG;
-int            s_freq_hz        = DEF_FREQ_HZ;
-int            s_mode           = 0;            // 0=Custom  1=CamBox
+bool     s_running   = false;
+int      s_mode      = MODE_CAM;
+int      s_pw_us     = DEF_PW_US;
+int      s_angle_deg = DEF_ANGLE_DEG;
+int      s_freq_hz   = DEF_FREQ_HZ;
+uint64_t s_next_freerun_us = 0;       // CAM free-run fallback scheduler
 
-// CamBox armed shot
-bool           s_armed          = false;
-unsigned long  s_fire_at_us     = 0;
+// Per-coil enable mask. Index 0..2 == COIL 1..3 on the wire.
+// Boot state = Coil1 only, i.e. identical to the pre-3-coil firmware.
+bool     s_coil_en[NUM_COILS] = { true, false, false };
 
-// Custom mode last-fire reference
-unsigned long  s_last_fire_us   = 0;
+// ── Per-coil independent runner ──────────────────────────────────────
+//   Each coil can free-run Peak & Hold pulses at ITS OWN frequency for a
+//   set duration, independent of the global `start`/CAM path. Driven from
+//   loop() by coil_runner_tick(). Live pulse counts stream as CPULSES:…
+//   so the dashboard can show each coil's activity and measured rate.
+#define CFREQ_MIN   1
+#define CFREQ_MAX  20        // hard-cap: 20 Hz max repetition rate (thermal limit)
+int      s_coil_freq[NUM_COILS]    = { DEF_FREQ_HZ, DEF_FREQ_HZ, DEF_FREQ_HZ };
+// Per-coil pulse width (total P&H µs). Each coil fires with ITS OWN width, not
+// the global s_pw_us. Range 100..5000 µs. The global `w` still drives the CAM /
+// global free-run path; these drive the per-coil runner + `FIRE <n>` (no width).
+int      s_coil_pw[NUM_COILS]      = { DEF_PW_US, DEF_PW_US, DEF_PW_US };
+bool     s_coil_running[NUM_COILS] = { false, false, false };
+uint64_t s_coil_next_us[NUM_COILS] = { 0, 0, 0 };   // next scheduled pulse
+uint64_t s_coil_stop_us[NUM_COILS] = { 0, 0, 0 };   // auto-stop time (0 = ∞)
+uint32_t s_coil_pulses[NUM_COILS]  = { 0, 0, 0 };   // pulses this run (for display)
+unsigned long s_cpulse_last_ms     = 0;             // CPULSES emit throttle
 
-// Refractory lockout — no new pulse may start before the current one ends
-unsigned long  s_pulse_end_us   = 0;
-
-// ════════════════════════════════════════════════════════════════════
-//  TELEMETRY / SERIAL
-// ════════════════════════════════════════════════════════════════════
-unsigned long  s_telem_last     = 0;
-String         s_serial_buf     = "";
-int            s_inj_count      = 0;    // injections this telemetry period
-
-// ════════════════════════════════════════════════════════════════════
-//  PRESSURE  (background ADC — non-blocking)
-// ════════════════════════════════════════════════════════════════════
-float          s_pressure       = 0.0f;
-long           s_adc_sum        = 0;
-int            s_adc_cnt        = 0;
-
-// ════════════════════════════════════════════════════════════════════
-//  BUZZER  (non-blocking)
-// ════════════════════════════════════════════════════════════════════
-unsigned long  s_beep_end       = 0;
+// GPIO19 Peak-supply relay — MANUAL only (operator toggles 12 V ↔ 28 V).
+// The firmware never switches this per pulse; it just holds the commanded level.
+// Boot = OFF (LOW) so the board powers up in its safe default state.
+bool     s_relay_on = false;
 
 // ════════════════════════════════════════════════════════════════════
-//  FORWARD DECLARATIONS
+//  PUMP / PID STATE
 // ════════════════════════════════════════════════════════════════════
-void rmt_init();
-void fire_injector();
+float    s_target_bar = 0.0f;
+float    s_actual_bar = 0.0f;
+float    s_pcv_duty   = 0.0f;         // raw LEDC (0..MV_MAX_RAW), driven by PID/manual
+int      s_pcv_freq   = MV_PWM_FREQ_DEF;  // Hz (PCV_FREQ / MV_FREQ) — 200 default
+
+// ── Metering Valve (Bosch ZME) controller — closed-loop or manual ────
+//   Runs on GPIO18 via LEDC 12-bit @ 1 kHz. Two modes: MANUAL (user picks
+//   duty %, clamped to MV_MAX_DUTY_PCT) and PRESSURE (PID from GPIO14).
+//   `s_mv_enabled` gates the output — must be true for any duty to reach
+//   the pin. Soft-start ramps actual_raw toward target_raw over ~200 ms
+//   whenever enable flips on. Fault → PWM=0 + s_mv_fault=true.
+#define MV_MODE_MANUAL    0
+#define MV_MODE_PRESSURE  1
+bool     s_mv_enabled       = false;   // gate: nothing energises until true
+int      s_mv_mode          = MV_MODE_PRESSURE;
+float    s_mv_manual_pct    = 0.0f;    // 0 .. MV_MAX_DUTY_PCT (MANUAL mode)
+float    s_mv_target_raw    = 0.0f;    // computed each tick (raw LEDC)
+float    s_mv_actual_raw    = 0.0f;    // soft-start ramp toward target_raw
+bool     s_mv_fault         = false;
+unsigned long s_mv_enable_ms = 0;      // wall time when enable flipped ON
+float    s_mv_meas_current  = 0.0f;    // amps (only if MV_CURRENT_SENSE_PIN)
+
+// PID gains + accumulators (inline PID)
+float    s_kp = 0.8f, s_ki = 0.05f, s_kd = 0.01f;
+float    s_pid_integral = 0.0f;
+float    s_pid_prev_err = 0.0f;
+bool     s_pid_have_prev = false;
+
+// Pressure scaling (PSCALE): voltage(V) → bar
+float    s_p_v0   = 0.5f;
+float    s_p_vmax = 4.5f;
+float    s_p_pmax = 2000.0f;
+
+// ── Bookkeeping ──────────────────────────────────────────────────────
+uint32_t s_last_logged_rev = 0;
+unsigned long s_pid_last_ms    = 0;
+unsigned long s_pcvlog_last_ms = 0;
+unsigned long s_telem_last_ms  = 0;
+unsigned long s_buzz_end_ms    = 0;
+String   s_serial_buf = "";
+
+esp_timer_handle_t s_coil_timer = NULL;
+
+// ════════════════════════════════════════════════════════════════════
+//  SINGLE-SHOT VALVE PULSE  —  precise plain (non-P&H) pulse on GPIO18.
+//
+//  A hardware timer (1 MHz → 1 µs/tick) times the falling edge in an ISR,
+//  so the pulse width is set in hardware and does NOT block the main loop
+//  (unlike Peak & Hold, which busy-waits with interrupts masked). This is
+//  the discrete alternative to PUMP mode's continuous LEDC duty-cycle PWM:
+//  one clean energisation of a settable length instead of a held duty.
+//
+//    SHOT <us>   fire one pulse of <us> µs (SHOT_MIN_US..SHOT_MAX_US)
+//    SHOT        repeat the last commanded duration
+// ════════════════════════════════════════════════════════════════════
+#define SHOT_MIN_US   500UL
+#define SHOT_MAX_US  5000UL
+
+// ── SQUARE pulses — a plain 100%-duty pulse on ANY coil, ANY width ──
+//   The hardware-timer path (below) drops the pin LOW in an ISR so widths
+//   as short as ~50 µs and as long as 100 ms are precise and non-blocking.
+//   When SQMODE is ON, both FIRE <n> and the per-coil runner (CRUN) fire
+//   plain square pulses instead of Peak & Hold. This is the strongest
+//   possible pulse — 24 V (with RELAY ON) held HIGH for the whole width.
+//   The ballast resistor and the coil are the thermal limit; the MOSFET is
+//   fine (IRFP260N). Do not repeat rapidly at wide widths.
+#define SQ_MIN_US       50UL
+#define SQ_MAX_US   100000UL     // 100 ms upper bound for a single square pulse
+
+hw_timer_t*       s_shot_timer = NULL;
+volatile uint32_t s_shot_pin   = COIL1_PIN;   // pin owned by the current pulse
+volatile bool     s_shot_busy  = false;       // a pulse is currently HIGH
+uint32_t          s_shot_us    = 1000;        // last commanded SHOT duration
+bool              s_sq_mode    = true;        // MAXPOWER default ON at boot — every
+                                              // injector fire path (FIRE, CRUN, CAM-sync,
+                                              // free-run) uses PROPER Peak & Hold, not
+                                              // a solid 100% square pulse. This is the
+                                              // ONLY safe default for real common-rail
+                                              // injectors: SQMODE=ON with a wide pulse
+                                              // on a 24V / 0.3–0.5 Ω coil dumps ~30 A
+                                              // continuously through the MOSFET and
+                                              // cooks it. If you need a hard square
+                                              // pulse for a diagnostic, send SQMODE ON
+                                              // (or MAXPOWER ON) explicitly.
+
+// ── Forward declarations ─────────────────────────────────────────────
+void enter_mode(int m);
 void handle_serial();
 void process_command(const String& cmd);
-void handle_custom();
-void handle_cambox();
-void update_pressure();
+void pid_reset();
+float pid_compute(float target, float actual, float dt);
+void pid_tick();
+void log_pcv();
 void send_telemetry();
 void beep_start(int ms);
 void beep_update();
+float read_pressure_bar();
+int   current_rpm();
+void  fire_shot(bool mark_debug);
+void  report_coils();
+bool  fire_single_shot(uint32_t us);                        // GPIO18, 500..5000
+bool  fire_square_shot(uint32_t pin, uint32_t us);          // any pin, 50..100000
+void  coil_runner_tick();
+void  report_coil_info();
+void  emit_cpulses();
 
 // ════════════════════════════════════════════════════════════════════
-//  FIRE INJECTOR  —  dispatches to P&H (Common Rail) or RMT (CamBox)
+//  FIRE — one Peak & Hold shot on every ENABLED coil, in order 1→2→3.
+//
+//  Sequential and blocking: each coil masks interrupts for its own pulse
+//  (see the blocking-budget note in the file header). Only the first coil
+//  actually fired carries the scope marker so GPIO26 still frames one pulse.
+//
+//  In PUMP mode Coil1 is driven by LEDC for the PID loop — P&H firing it
+//  would fight the PWM peripheral, so it is skipped there.
 // ════════════════════════════════════════════════════════════════════
-void fire_injector() {
-    // ── Refractory lockout — one pulse at a time ──────────────────────
-    //   Do not start a new pulse until the current one has fully elapsed.
-    //   Guarantees exactly the requested pulse width with no overlap and no
-    //   stacking in the RMT transmit queue: a trigger arriving mid-pulse is
-    //   ignored, not queued. (Wrap-safe signed compare for micros() rollover.)
-    unsigned long now = micros();
-    if ((long)(now - s_pulse_end_us) < 0) return;   // previous pulse still active
-    s_pulse_end_us = now + (unsigned long)s_pw_us;
-
-    // Arm post-injection cam blanking — reject the EMI the injector switching
-    // couples onto the cam line for the next CAM_BLANK_US (see cambox_isr).
-    s_cam_blank_until_us = now + CAM_BLANK_US;
-
-    // ── Common-Rail Peak & Hold path — CUSTOM mode only ───────────────
-    //   P&H is intentionally disabled in CamBox: fire_common_rail blocks
-    //   with interrupts masked for the whole pulse, which would stall the
-    //   cam ISR and drop pulses. CamBox always uses the non-blocking RMT
-    //   path below, so the cam ISR is never delayed.
-    if (g_use_peak_hold && s_mode == 0) {
-        fire_common_rail((uint32_t)s_pw_us);
-        s_inj_count++;
-        return;
+void fire_shot(bool mark_debug) {
+    bool mark = mark_debug;
+    for (int i = 0; i < NUM_COILS; i++) {
+        if (!s_coil_en[i]) continue;
+        if (s_coil_running[i]) continue;               // its own runner owns it
+        if (i == 0 && s_mode == MODE_PUMP) continue;   // GPIO18 belongs to PID
+        if (s_sq_mode) {
+            // MAXPOWER: SQUARE pulse (100% HIGH, no chop). Direct-GPIO with
+            // interrupts DISABLED around the pulse — otherwise proximityISR
+            // firing during esp_rom_delay_us (running in esp_timer task
+            // context) races with the timer state and eventually LoadProhibits.
+            // Cap at 5 ms so we never mask interrupts for more than that.
+            uint32_t us  = s_coil_pw[i];
+            if (us > 5000) us = 5000;
+            uint32_t pin = COIL_PINS[i];
+            portDISABLE_INTERRUPTS();
+            if (mark) GPIO.out_w1ts = (1UL << (uint32_t)DEBUG_PIN);
+            GPIO.out_w1ts = (1UL << pin);
+            esp_rom_delay_us(us);
+            GPIO.out_w1tc = (1UL << pin);
+            if (mark) GPIO.out_w1tc = (1UL << (uint32_t)DEBUG_PIN);
+            portENABLE_INTERRUPTS();
+        } else {
+            fire_peak_hold_pin(COIL_PINS[i], (uint32_t)s_coil_pw[i], mark);
+        }
+        mark = false;
     }
-    // ── Standard RMT flat-pulse path (CamBox / EUI / EUP) ─────────────
-    static rmt_symbol_word_t sym;
-    sym.level0    = 1;
-    sym.duration0 = (uint16_t)s_pw_us;   // HIGH for s_pw_us µs
-    sym.level1    = 0;
-    sym.duration1 = 0;                    // end-marker → idle LOW
-
-    rmt_transmit(s_rmt_chan, s_rmt_enc,
-                 &sym, sizeof(sym), &k_rmt_cfg);
-    s_inj_count++;
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  CAM ISR  —  IRAM, first-edge seed + two-stage filter
+//  PER-COIL RUNNER — fire each running coil at its own frequency, and
+//  auto-stop it when its run duration elapses. Called every loop().
+//  Non-blocking scheduler; the pulse itself blocks ~pw µs (see header
+//  blocking-budget note when several coils come due in the same tick).
 // ════════════════════════════════════════════════════════════════════
-void IRAM_ATTR cambox_isr() {
-    unsigned long now = micros();
+void coil_runner_tick() {
+    uint64_t now = esp_timer_get_time();
+    bool stopped_any = false;
+    for (int i = 0; i < NUM_COILS; i++) {
+        if (!s_coil_running[i]) continue;
 
-    // ── Post-injection blanking ───────────────────────────────────────
-    //   Ignore any edge that lands within CAM_BLANK_US of the last injector
-    //   fire — that is when the injector switching couples EMI / a reflection
-    //   back onto the cam line, which would otherwise trigger a false second
-    //   pulse. (Wrap-safe signed compare for micros() rollover.)
-    if ((long)(now - s_cam_blank_until_us) < 0) return;
+        // Coil1 belongs to the PID/LEDC loop in PUMP mode — never P&H it there.
+        if (i == 0 && s_mode == MODE_PUMP) {
+            s_coil_running[i] = false;
+            digitalWrite(COIL_PINS[i], LOW);
+            stopped_any = true;
+            continue;
+        }
+        // Auto-stop when the run duration elapses (stop_us == 0 means run ∞).
+        if (s_coil_stop_us[i] != 0 && now >= s_coil_stop_us[i]) {
+            s_coil_running[i] = false;
+            digitalWrite(COIL_PINS[i], LOW);
+            stopped_any = true;
+            continue;
+        }
+        // Due for its next pulse?
+        int hz = s_coil_freq[i];
+        if (hz < 1) hz = 1;
+        uint64_t period = 1000000ULL / (uint64_t)hz;
+        if (now >= s_coil_next_us[i]) {
+            s_coil_next_us[i] = now + period;
+            if (s_sq_mode) {
+                // Plain square pulse — full HIGH for the whole width, no chop.
+                // If a previous pulse is still HIGH (very wide pw vs freq),
+                // skip this tick rather than overlap.
+                fire_square_shot(COIL_PINS[i], (uint32_t)s_coil_pw[i]);
+            } else {
+                fire_peak_hold_pin(COIL_PINS[i], (uint32_t)s_coil_pw[i], false);
+            }
+            s_coil_pulses[i]++;
+        }
+    }
+    if (stopped_any) { report_coil_info(); emit_cpulses(); }
+}
 
-    // ── First edge after start/reset — just seed the timestamp ───────
-    //   s_last_cam_us == 0 means there is no previous edge yet. Computing
-    //   a gap here would yield "micros() since boot" — a huge garbage
-    //   period that poisons s_rpm_period and skews RPM at startup.
-    //   Seed and wait for the next edge.
-    if (s_last_cam_us == 0) { s_last_cam_us = now; return; }
+// Per-coil config + run state — sent on change and on the CINFO request.
+// Format: CINFO:<f1>,<f2>,<f3>,<pw1>,<pw2>,<pw3>,<r1>,<r2>,<r3>
+//         (freqs, then per-coil pulse widths, then running flags).
+// NOT in the 100 Hz stream, so the P:/A:/R:/I:/C: telemetry is untouched.
+void report_coil_info() {
+    Serial.printf("CINFO:%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                  s_coil_freq[0], s_coil_freq[1], s_coil_freq[2],
+                  s_coil_pw[0],   s_coil_pw[1],   s_coil_pw[2],
+                  s_coil_running[0] ? 1 : 0,
+                  s_coil_running[1] ? 1 : 0,
+                  s_coil_running[2] ? 1 : 0);
+}
 
-    unsigned long gap = now - s_last_cam_us;
+// Live per-coil pulse counts (this run). Emitted at 10 Hz while any coil
+// runs, plus once on stop. Prefix has no "P:" substring, so the serial
+// reader never mistakes it for a telemetry packet.
+void emit_cpulses() {
+    Serial.printf("CPULSES:%lu,%lu,%lu\n",
+                  (unsigned long)s_coil_pulses[0],
+                  (unsigned long)s_coil_pulses[1],
+                  (unsigned long)s_coil_pulses[2]);
+}
 
-    // ── Stage 1: electrical debounce ─────────────────────────────────
-    //   Catches rapid EMI bursts from injector coil switching.
-    if (gap < CAM_DEBOUNCE_US) return;
+// ════════════════════════════════════════════════════════════════════
+//  COIL TIMER CALLBACK — fires at cam_time + delay. GPIO26 LOW = fire.
+// ════════════════════════════════════════════════════════════════════
+void IRAM_ATTR coil_fire_cb(void* arg) {
+    GPIO.out_w1tc = (1UL << (uint32_t)DEBUG_PIN);   // DBG LOW = fire instant
+    fire_shot(false);
+}
 
-    // ── Stage 2: physical plausibility ───────────────────────────────
-    //   If the implied RPM is above CAM_MAX_RPM the pulse is likely
-    //   noise (e.g. 50 Hz mains coupling or ringing on the wire).
-    if (gap < CAM_MIN_PERIOD_US) return;
+// ════════════════════════════════════════════════════════════════════
+//  SINGLE-SHOT falling edge — hardware-timer ISR ends the valve pulse.
+//  Only direct register writes here (IRAM-safe); no timer-API calls, so
+//  it is never blocked by the flash cache. autoreload=false makes the
+//  alarm one-shot, so it will not re-fire until the next SHOT re-arms it.
+// ════════════════════════════════════════════════════════════════════
+void IRAM_ATTR shot_end_isr() {
+    GPIO.out_w1tc = (1UL << s_shot_pin);            // valve LOW — pulse ends
+    GPIO.out_w1tc = (1UL << (uint32_t)DEBUG_PIN);   // scope marker LOW
+    s_shot_busy = false;
+}
 
-    //   NOTE: there is intentionally NO rate-of-change stage. A bench is
-    //   spun up/down by hand, so the period legitimately changes fast in
-    //   both directions; rejecting "big jumps" dropped real pulses and made
-    //   CamBox skip injections. Stage 1/2 bound the absolute timing and the
-    //   median window (send_telemetry) smooths any single spurious sample.
+// ════════════════════════════════════════════════════════════════════
+//  fire_single_shot — one precise plain pulse of `us` µs on the valve.
+//  Rising edge here, falling edge in shot_end_isr `us` ticks later. The
+//  1 MHz counter is reset immediately before the rising edge so the width
+//  is measured in hardware, independent of loop timing.
+//  Returns false if out of range or a shot is still in progress.
+// ════════════════════════════════════════════════════════════════════
+bool fire_single_shot(uint32_t us) {
+    // Legacy SHOT (valve GPIO18 only, 500..5000 µs) — routes through the
+    // general square-shot helper so there is a single ISR-end code path.
+    if (us < SHOT_MIN_US || us > SHOT_MAX_US) return false;
+    return fire_square_shot((uint32_t)PIN_COIL, us);
+}
 
-    // ── Valid pulse — update state ────────────────────────────────────
-    s_rpm_period  = gap;
-    s_cam_time_us = now;
-    s_last_cam_us = now;
-    s_cam_fired   = true;
-    s_cam_telem++;
+// ════════════════════════════════════════════════════════════════════
+//  fire_square_shot — one plain 100 %-duty pulse on ANY pin, ANY width
+//  in [SQ_MIN_US..SQ_MAX_US]. Rising edge here; the hardware timer's
+//  shot_end_isr drops the pin LOW `us` ticks later. Non-blocking, so a
+//  100 ms pulse does not stall the loop or telemetry. Refuses to overlap
+//  a still-live pulse (returns false → callers emit ERR:SQ_BUSY).
+// ════════════════════════════════════════════════════════════════════
+bool fire_square_shot(uint32_t pin, uint32_t us) {
+    if (us < SQ_MIN_US || us > SQ_MAX_US) return false;
+    if (s_shot_busy) return false;
 
-    // Rolling RPM buffer (circular, newest first)
+    s_shot_pin  = pin;
+    s_shot_busy = true;
+
+    timerWrite(s_shot_timer, 0);                    // counter = 0
+    GPIO.out_w1ts = (1UL << pin);                   // rising edge at count≈0
+    GPIO.out_w1ts = (1UL << (uint32_t)DEBUG_PIN);   // scope marker HIGH
+    timerAlarm(s_shot_timer, (uint64_t)us, false, 0);
+    return true;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  PROXIMITY ISR — 1 pulse/rev, recompute delay EVERY revolution
+// ════════════════════════════════════════════════════════════════════
+void IRAM_ATTR proximityISR() {
+    uint64_t now = esp_timer_get_time();
+
+    if (!s_cam_seeded) { s_last_trigger_us = now; s_cam_seeded = true; return; }
+
+    uint64_t gap = now - s_last_trigger_us;
+    if (gap < CAM_DEBOUNCE_US)   return;   // Stage 1: EMI debounce
+    if (gap < CAM_MIN_PERIOD_US) return;   // Stage 2: > CAM_MAX_RPM ⇒ noise
+    if (s_period_us > 0 && gap < (s_period_us >> 1)) return;  // Stage 3: refractory
+
+    s_period_us       = gap;
+    s_last_trigger_us = now;
+    s_rev_count++;
+
     s_rpm_win[s_rpm_wptr % RPM_WINDOW] = gap;
     s_rpm_wptr++;
     if (s_rpm_wcnt < RPM_WINDOW) s_rpm_wcnt++;
-}
 
-// ════════════════════════════════════════════════════════════════════
-//  RMT INIT
-// ════════════════════════════════════════════════════════════════════
-void rmt_init() {
-    // TX channel config
-    rmt_tx_channel_config_t ch_cfg;
-    memset(&ch_cfg, 0, sizeof(ch_cfg));
-    ch_cfg.gpio_num          = (gpio_num_t)PIN_INJECTOR;
-    ch_cfg.clk_src           = RMT_CLK_SRC_DEFAULT;
-    ch_cfg.resolution_hz     = RMT_RES_HZ;
-    ch_cfg.mem_block_symbols = 64;
-    ch_cfg.trans_queue_depth = 4;
+    if (!s_running || s_mode != MODE_CAM) return;
 
-    esp_err_t err = rmt_new_tx_channel(&ch_cfg, &s_rmt_chan);
-    if (err != ESP_OK) {
-        Serial.printf("RMT channel error: %s\n", esp_err_to_name(err));
-        return;
-    }
+    // INTEGER math only — floating-point in an ISR on ESP32 corrupts FPU
+    // registers (ISRs don't save FPU context by default) and eventually
+    // LoadProhibits a random task ~10-20 s later. Was: (float)angle/360*gap.
+    s_fire_delay_us = ((uint64_t)s_angle_deg * gap) / 360ULL;
 
-    // Copy encoder
-    rmt_copy_encoder_config_t enc_cfg;
-    memset(&enc_cfg, 0, sizeof(enc_cfg));
-    err = rmt_new_copy_encoder(&enc_cfg, &s_rmt_enc);
-    if (err != ESP_OK) {
-        Serial.printf("RMT encoder error: %s\n", esp_err_to_name(err));
-        return;
-    }
-
-    err = rmt_enable(s_rmt_chan);
-    if (err != ESP_OK) {
-        Serial.printf("RMT enable error: %s\n", esp_err_to_name(err));
-        return;
-    }
-
-    // Transmit config — eot_level=0 → pin goes LOW after pulse
-    memset(&k_rmt_cfg, 0, sizeof(k_rmt_cfg));
-    k_rmt_cfg.loop_count        = 0;
-    k_rmt_cfg.flags.eot_level   = 0;
+    GPIO.out_w1ts = (1UL << (uint32_t)DEBUG_PIN);   // DBG HIGH at ISR
+    esp_timer_stop(s_coil_timer);
+    uint64_t d = (s_fire_delay_us < 1) ? 1 : s_fire_delay_us;
+    esp_timer_start_once(s_coil_timer, d);          // fire from timer task
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -312,158 +478,307 @@ void rmt_init() {
 void setup() {
     Serial.begin(115200);
 
-    // RMT owns PIN_INJECTOR — do NOT call pinMode on it
-    rmt_init();
-    init_debug_pin();               // GPIO26 — oscilloscope trigger for P&H
+    coil_pins_init();                  // GPIO18/23/4 outputs LOW + debug pin
+    pinMode(PIN_RELAY, OUTPUT);        // Peak-supply relay — deterministic, safe default
+    digitalWrite(PIN_RELAY, LOW);      // boot OFF (12 V side)
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);
+    pinMode(PIN_PROX, INPUT_PULLUP);
 
-    pinMode(PIN_LED,      OUTPUT);
-    pinMode(PIN_BUZZER,   OUTPUT);
-    pinMode(PIN_CAM,      INPUT_PULLUP);
-
-    // GPIO4 (ADC2 CH0) — global attenuation + resolution for reliable reading
     analogReadResolution(12);
-    analogSetAttenuation(ADC_11db);   // global: covers ADC2 pins unlike per-pin call
+    analogSetAttenuation(ADC_11db);
     pinMode(PIN_PRESSURE, INPUT);
 
-    digitalWrite(PIN_LED,    LOW);
-    digitalWrite(PIN_BUZZER, LOW);
+    esp_timer_create_args_t targs = {};
+    targs.callback = &coil_fire_cb;
+    targs.dispatch_method = ESP_TIMER_TASK;
+    targs.name = "coil";
+    esp_timer_create(&targs, &s_coil_timer);
 
-    // CAM interrupt starts DETACHED — default mode is Custom (s_mode=0)
-    // attachInterrupt is called only when user switches to CamBox mode
+    // Single-shot valve timer — 1 MHz gives 1 µs resolution for SHOT pulses.
+    s_shot_timer = timerBegin(1000000);
+    timerAttachInterrupt(s_shot_timer, &shot_end_isr);
 
-    Serial.println("INJECTOR PRO - Ready");
+    enter_mode(MODE_CAM);
+    Serial.println("CamBox Pro (3-coil) - Ready");
+    Serial.printf("MODE:%s\n", s_mode == MODE_CAM ? "CAM" : "PUMP");
+    report_coils();
+    report_coil_info();
+    Serial.printf("RELAY:%d\n", s_relay_on ? 1 : 0);
+    Serial.printf("SQMODE:%d\n", s_sq_mode ? 1 : 0);
+    Serial.printf("MAXPOWER:%d\n", s_sq_mode ? 1 : 0);
+    Serial.printf("MV:0,PRESSURE,0.0,0,0.0,0,%lu\n",   // metering-valve boot state
+                  (unsigned long)MV_PWM_FREQ_DEF);
+    Serial.printf("NOTE: MV (Coil1/GPIO18) — LEDC %d-bit @ %luHz (runtime %lu-%lu), MAX_DUTY %d%% (safety), NORMALLY-OPEN valve.\n",
+                  MV_PWM_RES, (unsigned long)MV_PWM_FREQ_DEF,
+                  (unsigned long)MV_PWM_FREQ_MIN, (unsigned long)MV_PWM_FREQ_MAX,
+                  MV_MAX_DUTY_PCT);
+    // MAXPOWER (== SQMODE) safety note: solid 100 % HIGH for the whole width →
+    // no current limiting from the P&H chop. Keep pulses short + spaced; needs
+    // RELAY ON (24 V), a heatsinked IRFP260N, and an adequate ballast. Do not
+    // run continuous wide pulses.
+    Serial.println("NOTE: Injectors boot in Peak & Hold (SQMODE=OFF). MAXPOWER=solid 100% pulse — enable only for diagnostics; MOSFET+ballast must be sized for continuous full current.");
+    // Safety note: the PEAK phase is full-voltage. One strong shot ≈ 25–30 A with
+    // 24 V / ~0.5 Ω ballast / ~0.3–0.5 Ω coil. SINGLE, non-repeating — MOSFET must
+    // be rated for the peak, ballast resistor for the average power. Relay boots
+    // OFF (12 V); a strong shot expects RELAY ON (24 V).
+    Serial.println("NOTE: PEAK=full-voltage single shot (~25-30A). MOSFET/ballast must be rated. Relay boots OFF(12V); strong shots need RELAY ON(24V).");
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  MAIN LOOP  —  zero blocking, all operations return immediately
+//  MAIN LOOP
 // ════════════════════════════════════════════════════════════════════
 void loop() {
-    handle_serial();                   // 1. parse serial commands
+    handle_serial();
+    unsigned long now_ms = millis();
 
-    if (s_running) {                   // 2. injection logic
-        if (s_mode == 0) handle_custom();
-        else             handle_cambox();
+    // Per-coil independent runners (own frequency + run duration each).
+    coil_runner_tick();
+    bool any_coil_running = false;
+    for (int i = 0; i < NUM_COILS; i++) if (s_coil_running[i]) any_coil_running = true;
+    if (any_coil_running && now_ms - s_cpulse_last_ms >= 100) {
+        s_cpulse_last_ms = now_ms;
+        emit_cpulses();                 // 10 Hz live pulse counts for the UI
     }
 
-    update_pressure();                 // 3. one ADC sample
+    if (s_running && s_mode == MODE_CAM) {
+        // Free-run fallback: pulse at f Hz only while the cam is silent.
+        uint64_t now_us = esp_timer_get_time();
+        bool cam_stale = !s_cam_seeded || (now_us - s_last_trigger_us) > RPM_STALE_US;
+        if (cam_stale && s_freq_hz > 0) {
+            uint64_t period = 1000000ULL / (uint64_t)s_freq_hz;
+            if (now_us >= s_next_freerun_us) {
+                s_next_freerun_us = now_us + period;
+                fire_shot(true);                    // mark first coil on scope
+            }
+        }
+        // 10-revolution log
+        uint32_t rc = s_rev_count;
+        if (rc - s_last_logged_rev >= 10) {
+            s_last_logged_rev = rc;
+            Serial.printf("[CAM] RPM=%d angle=%ddeg delay=%luus pw=%dus\n",
+                          current_rpm(), s_angle_deg,
+                          (unsigned long)s_fire_delay_us, s_pw_us);
+        }
+    }
 
-    unsigned long now_ms = millis();   // 4. telemetry
-    if (now_ms - s_telem_last >= TELEMETRY_MS) {
+    // MV controller runs any time we're in PUMP mode — no `start` needed.
+    // The output is still gated by s_mv_enabled inside pid_tick(), so nothing
+    // energises until MV_ENABLE ON. This is the new independent gate: MV has
+    // its own enable, separate from the legacy injector `start`/`stop` flag.
+    if (s_mode == MODE_PUMP) {
+        if (now_ms - s_pid_last_ms >= PID_DT_MS) {
+            s_pid_last_ms = now_ms;
+            pid_tick();
+        }
+        if (s_running && now_ms - s_pcvlog_last_ms >= PCV_LOG_MS) {
+            s_pcvlog_last_ms = now_ms;
+            log_pcv();       // keep the legacy [PCV] log gated on `start`
+        }
+    }
+
+    if (now_ms - s_telem_last_ms >= TELEM_MS) {
+        s_telem_last_ms = now_ms;
         send_telemetry();
-        s_telem_last += TELEMETRY_MS;   // += keeps interval precise (no drift)
     }
-
-    beep_update();                     // 5. buzzer timeout
+    beep_update();
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  CUSTOM MODE  —  fixed-frequency injection
+//  MODE MANAGEMENT — GPIO18 switches between P&H output and LEDC PWM.
+//  Coil2/Coil3 stay plain P&H outputs in both modes; all three are driven
+//  LOW here so a mode change never leaves a solenoid energised.
 // ════════════════════════════════════════════════════════════════════
-void handle_custom() {
-    unsigned long now    = micros();
-    unsigned long period = 1000000UL / (unsigned long)s_freq_hz;
-
-    if ((now - s_last_fire_us) >= period) {
-        s_last_fire_us = now;
-        fire_injector();
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-//  CAMBOX MODE  —  cam-synchronised injection with delay angle
-//
-//  Timing precision:
-//    The main loop runs in ~5–15 µs (no blocking).
-//    The armed-shot check fires within ±15 µs of the target.
-//    At 3000 RPM (T = 20 ms), 15 µs ≡ ±0.27° — well within spec.
-// ════════════════════════════════════════════════════════════════════
-void handle_cambox() {
-    // Consume cam event
-    if (s_cam_fired) {
-        s_cam_fired = false;
-
-        unsigned long delay_us = 0;
-
-        if (s_delay_deg > 0 && s_rpm_period > 0) {
-            // Convert angle to time using the most-recent revolution period
-            delay_us = (unsigned long)(
-                ((float)s_delay_deg / DEG_FULL) * (float)s_rpm_period
-            );
-        }
-
-        if (delay_us < 20UL) {
-            // Negligible delay — fire immediately
-            fire_injector();
-        } else {
-            // Arm the shot: fire at cam_time + delay
-            s_fire_at_us = s_cam_time_us + delay_us;
-            s_armed      = true;
-        }
+void enter_mode(int m) {
+    detachInterrupt(digitalPinToInterrupt(PIN_PROX));
+    esp_timer_stop(s_coil_timer);
+    ledcDetach(PIN_COIL);              // no-op if not attached
+    for (int i = 0; i < NUM_COILS; i++) {
+        s_coil_running[i] = false;     // a mode change halts every per-coil runner
+        pinMode(COIL_PINS[i], OUTPUT);
+        digitalWrite(COIL_PINS[i], LOW);
     }
 
-    // Armed-shot check — runs every loop iteration (~5–15 µs)
-    if (s_armed && (micros() >= s_fire_at_us)) {
-        s_armed = false;
-        fire_injector();
-    }
-}
+    s_mode = m;
 
-// ════════════════════════════════════════════════════════════════════
-//  BACKGROUND PRESSURE  —  1 ADC read per loop iteration (no delay)
-// ════════════════════════════════════════════════════════════════════
-void update_pressure() {
-    s_adc_sum += analogReadMilliVolts(PIN_PRESSURE);
-    s_adc_cnt++;
-
-    if (s_adc_cnt >= P_SAMPLES) {
-        // Send raw averaged VX4 mV — Python applies EMA + BAR formula
-        s_pressure = (float)s_adc_sum / (float)s_adc_cnt;
-        s_adc_sum  = 0;
-        s_adc_cnt  = 0;
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-//  TELEMETRY — sent every TELEMETRY_MS
-//  Format: P:<bar>,A:<°>,R:<rpm>,I:<inj>,C:<cam>
-// ════════════════════════════════════════════════════════════════════
-void send_telemetry() {
-    // RPM from rolling average of last N periods
-    int rpm = 0;
-    unsigned long cam_age = micros() - (unsigned long)s_last_cam_us;
-
-    if (s_rpm_wcnt > 0 && cam_age < RPM_STALE_US) {
-        noInterrupts();
-        int           cnt = s_rpm_wcnt;
-        unsigned long buf[RPM_WINDOW];
-        for (int i = 0; i < cnt; i++) buf[i] = s_rpm_win[i];
-        interrupts();
-
-        // Insertion sort → median (robust to outlier noise periods)
-        for (int i = 1; i < cnt; i++) {
-            unsigned long k = buf[i]; int j = i - 1;
-            while (j >= 0 && buf[j] > k) { buf[j + 1] = buf[j]; j--; }
-            buf[j + 1] = k;
-        }
-        unsigned long median_period = buf[cnt / 2];
-        if (median_period > 0) rpm = (int)(60000000UL / median_period);
-    }
-
-    // Atomically snapshot and reset counters
     noInterrupts();
-    int inj       = s_inj_count;  s_inj_count = 0;
-    int cam_pulses = s_cam_telem;  s_cam_telem = 0;
+    s_cam_seeded = false; s_period_us = 0;
+    s_rpm_wptr = 0; s_rpm_wcnt = 0;
+    s_rev_count = 0; s_last_logged_rev = 0;
     interrupts();
 
-    Serial.print("P:");  Serial.print(s_pressure, 1);
-    Serial.print(",A:"); Serial.print(s_delay_deg);
-    Serial.print(",R:"); Serial.print(rpm);
-    Serial.print(",I:"); Serial.print(inj);
-    Serial.print(",C:"); Serial.println(cam_pulses);
+    if (m == MODE_CAM) {
+        s_next_freerun_us = esp_timer_get_time();
+        attachInterrupt(digitalPinToInterrupt(PIN_PROX), proximityISR, RISING);
+    } else { // MODE_PUMP — GPIO18 becomes the Metering-Valve PWM output
+        ledcAttach(PIN_COIL, s_pcv_freq, MV_PWM_RES);   // 12-bit duty 0..MV_PWM_MAX
+        ledcWrite(PIN_COIL, 0);
+        pid_reset();
+        // Fresh entry into PUMP mode → wipe MV state so nothing energises
+        // until the user explicitly re-enables it.
+        s_mv_enabled    = false;
+        s_mv_fault      = false;
+        s_mv_target_raw = 0.0f;
+        s_mv_actual_raw = 0.0f;
+        s_pcv_duty      = 0.0f;
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  SERIAL HANDLER
+//  INLINE PID — clamping + conditional integral anti-windup
+// ════════════════════════════════════════════════════════════════════
+void pid_reset() {
+    s_pid_integral = 0.0f;
+    s_pid_prev_err = 0.0f;
+    s_pid_have_prev = false;
+}
+
+float pid_compute(float target, float actual, float dt) {
+    if (dt <= 0.0f) dt = 0.01f;
+    const float error = target - actual;
+
+    float deriv = 0.0f;
+    if (s_pid_have_prev) deriv = (error - s_pid_prev_err) / dt;
+    s_pid_prev_err = error;
+    s_pid_have_prev = true;
+
+    float new_integral = s_pid_integral + error * dt;
+    float out = s_kp * error + s_ki * new_integral + s_kd * deriv;
+
+    // Clamp PID output to the MV safety cap (raw LEDC 0..MV_MAX_RAW).
+    const float MAX_OUT = (float)MV_MAX_RAW;
+    if (out > MAX_OUT) {
+        out = MAX_OUT;
+        if (error < 0) s_pid_integral = new_integral;   // allow unwinding
+    } else if (out < 0.0f) {
+        out = 0.0f;
+        if (error > 0) s_pid_integral = new_integral;
+    } else {
+        s_pid_integral = new_integral;
+    }
+    return out;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  pid_tick — MV controller heartbeat (called every PID_DT_MS from loop)
+//   • reads sensors  • picks target from mode  • soft-starts current duty
+//   • enforces MAX_DUTY hard clamp  • latches fault + kills PWM on bad state
+// ════════════════════════════════════════════════════════════════════
+void pid_tick() {
+    // ── sensor read ──
+    s_actual_bar = read_pressure_bar();
+
+    // ── fault detection: rail pressure massively out of range ──
+    if (s_actual_bar < 0.0f || s_actual_bar > (s_p_pmax * 1.05f)) {
+        s_mv_fault = true;
+    }
+
+    // ── if not enabled OR fault latched → hold LOW, no ramp, no PID ──
+    if (!s_mv_enabled || s_mv_fault) {
+        s_mv_target_raw = 0.0f;
+        s_mv_actual_raw = 0.0f;
+        s_pcv_duty      = 0.0f;
+        ledcWrite(PIN_COIL, 0);
+        return;
+    }
+
+    // ── pick target raw duty from active mode ──
+    if (s_mv_mode == MV_MODE_MANUAL) {
+        // MANUAL — user's requested %, hard-clamped to MAX_DUTY_PCT.
+        float pct = s_mv_manual_pct;
+        if (pct < 0.0f) pct = 0.0f;
+        if (pct > (float)MV_MAX_DUTY_PCT) pct = (float)MV_MAX_DUTY_PCT;
+        s_mv_target_raw = pct * (float)MV_PWM_MAX / 100.0f;
+    } else {
+        // PRESSURE — PID clamps its own output at MV_MAX_RAW.
+        s_mv_target_raw =
+            pid_compute(s_target_bar, s_actual_bar, PID_DT_MS / 1000.0f);
+    }
+    // ── hard safety cap regardless of source ──
+    if (s_mv_target_raw > (float)MV_MAX_RAW)
+        s_mv_target_raw = (float)MV_MAX_RAW;
+
+    // ── soft-start ramp: max slew = full range / MV_SOFTSTART_MS per tick ──
+    const float max_step = (float)MV_MAX_RAW * ((float)PID_DT_MS / (float)MV_SOFTSTART_MS);
+    float delta = s_mv_target_raw - s_mv_actual_raw;
+    if (delta >  max_step) delta =  max_step;
+    if (delta < -max_step) delta = -max_step;
+    s_mv_actual_raw += delta;
+    if (s_mv_actual_raw < 0.0f) s_mv_actual_raw = 0.0f;
+    if (s_mv_actual_raw > (float)MV_MAX_RAW) s_mv_actual_raw = (float)MV_MAX_RAW;
+
+    // ── write PWM + mirror into legacy s_pcv_duty for telemetry ──
+    s_pcv_duty = s_mv_actual_raw;
+    ledcWrite(PIN_COIL, (uint32_t)(s_mv_actual_raw + 0.5f));
+}
+
+float read_pressure_bar() {
+    // ── Three-stage noise reduction ──────────────────────────────────
+    // 1) Oversample: average 32 ADC reads per call → -5.7× noise (√32).
+    //    32 × ~50 µs = ~1.6 ms, still well inside the 10 ms PID tick.
+    // 2) EMA on the mapped bar value → time-constant ≈ 400 ms at α=0.05.
+    //    Heavy smoothing — the LCD reads rock-steady, and true pressure
+    //    changes still show up within about half a second.
+    long sum = 0;
+    for (int i = 0; i < 32; i++) sum += analogReadMilliVolts(PIN_PRESSURE);
+    float v = (float)(sum / 32) / 1000.0f;
+    float span = s_p_vmax - s_p_v0;
+    if (span <= 0.0001f) return 0.0f;
+    float bar = (v - s_p_v0) / span * s_p_pmax;
+    if (bar < 0) bar = 0;
+
+    static float s_bar_ema = 0.0f;
+    static bool  s_bar_ema_init = false;
+    if (!s_bar_ema_init) { s_bar_ema = bar; s_bar_ema_init = true; }
+    else s_bar_ema = 0.05f * bar + 0.95f * s_bar_ema;
+    return s_bar_ema;
+}
+
+int current_rpm() {
+    if (s_rpm_wcnt == 0) return 0;
+    if (esp_timer_get_time() - s_last_trigger_us > RPM_STALE_US) return 0;
+
+    noInterrupts();
+    int cnt = s_rpm_wcnt;
+    uint64_t buf[RPM_WINDOW];
+    for (int i = 0; i < cnt; i++) buf[i] = s_rpm_win[i];
+    interrupts();
+
+    for (int i = 1; i < cnt; i++) {
+        uint64_t k = buf[i]; int j = i - 1;
+        while (j >= 0 && buf[j] > k) { buf[j+1] = buf[j]; j--; }
+        buf[j+1] = k;
+    }
+    uint64_t med = buf[cnt/2];
+    return med ? (int)(60000000ULL / med) : 0;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  LOGGING / TELEMETRY
+// ════════════════════════════════════════════════════════════════════
+void log_pcv() {
+    Serial.printf("[PCV] target=%.0fbar actual=%.0fbar duty=%d%% rpm=%d\n",
+                  s_target_bar, s_actual_bar,
+                  (int)(s_pcv_duty / (float)MV_PWM_MAX * 100.0f + 0.5f), current_rpm());
+}
+
+// Coil enable mask. Sent only on boot, on change, and on request — NOT in the
+// 100 Hz telemetry stream, so the P:/A:/R:/I:/C: packet format is untouched.
+void report_coils() {
+    Serial.printf("COILS:%d,%d,%d\n",
+                  s_coil_en[0] ? 1 : 0, s_coil_en[1] ? 1 : 0, s_coil_en[2] ? 1 : 0);
+}
+
+void send_telemetry() {
+    Serial.print("P:");  Serial.print(s_actual_bar, 1);
+    Serial.print(",A:"); Serial.print(s_angle_deg);
+    Serial.print(",R:"); Serial.print(current_rpm());
+    Serial.print(",I:"); Serial.print(s_mode == MODE_PUMP ? (int)(s_pcv_duty/255.0f*100.0f+0.5f) : s_freq_hz);
+    Serial.print(",C:"); Serial.println((int)s_rev_count);
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  SERIAL
 // ════════════════════════════════════════════════════════════════════
 void handle_serial() {
     while (Serial.available()) {
@@ -478,110 +793,560 @@ void handle_serial() {
     }
 }
 
+static bool parse3(const String& s, int start, float& a, float& b, float& c) {
+    int p1 = s.indexOf(' ', start);
+    int p2 = (p1 > 0) ? s.indexOf(' ', p1 + 1) : -1;
+    if (p1 < 0 || p2 < 0) return false;
+    a = s.substring(start, p1).toFloat();
+    b = s.substring(p1 + 1, p2).toFloat();
+    c = s.substring(p2 + 1).toFloat();
+    return true;
+}
+
 void process_command(const String& cmd) {
-    beep_start(40);   // short confirmation beep
+    beep_start(40);
 
     if (cmd == "start") {
-        s_running      = true;
-        s_armed        = false;
-        s_last_fire_us = 0;
-        // Clear cam/RPM state so each run starts clean — the first cam edge
-        // re-seeds s_last_cam_us (see cambox_isr) instead of measuring a
-        // stale gap left over from the previous run.
+        s_running = true;
         noInterrupts();
-        s_rpm_wcnt    = 0;
-        s_rpm_wptr    = 0;
-        s_rpm_period  = 0;
-        s_cam_telem   = 0;
-        s_cam_fired   = false;
-        s_last_cam_us = 0;
+        s_cam_seeded = false; s_period_us = 0;
+        s_rpm_wptr = 0; s_rpm_wcnt = 0;
+        s_rev_count = 0; s_last_logged_rev = 0;
         interrupts();
-        digitalWrite(PIN_LED, HIGH);
+        s_next_freerun_us = esp_timer_get_time();
+        if (s_mode == MODE_PUMP) pid_reset();
         Serial.println("OK:START");
 
     } else if (cmd == "stop") {
         s_running = false;
-        s_armed   = false;
-        // RMT pin goes LOW automatically after the current pulse ends
-        digitalWrite(PIN_LED, LOW);
+        esp_timer_stop(s_coil_timer);
+        if (s_mode == MODE_PUMP) ledcWrite(PIN_COIL, 0);
+        // Also halt every per-coil runner — `stop` is the master safety stop.
+        for (int i = 0; i < NUM_COILS; i++) s_coil_running[i] = false;
+        // Force every P&H coil LOW — never leave a solenoid energised on stop.
+        for (int i = 0; i < NUM_COILS; i++) {
+            if (i == 0 && s_mode == MODE_PUMP) continue;   // GPIO18 is LEDC here
+            digitalWrite(COIL_PINS[i], LOW);
+        }
         Serial.println("OK:STOP");
+        report_coil_info();
 
     } else if (cmd == "mode") {
-        s_mode = (s_mode == 0) ? 1 : 0;
-        s_armed        = false;
-        s_cam_fired    = false;
-        s_last_fire_us = 0;
-
-        if (s_mode == 0) {
-            // ── Custom: detach CAM interrupt, zero all RPM state ──────
-            detachInterrupt(digitalPinToInterrupt(PIN_CAM));
-            noInterrupts();
-            s_rpm_wcnt    = 0;
-            s_rpm_wptr    = 0;
-            s_rpm_period  = 0;
-            s_cam_telem   = 0;
-            s_cam_fired   = false;
-            s_last_cam_us = 0;
-            interrupts();
-        } else {
-            // ── CamBox: re-attach CAM interrupt ───────────────────────
-            attachInterrupt(digitalPinToInterrupt(PIN_CAM), cambox_isr, RISING);
-        }
-
+        s_running = false;
+        enter_mode(s_mode == MODE_CAM ? MODE_PUMP : MODE_CAM);
         Serial.print("OK:MODE:");
-        Serial.println(s_mode == 0 ? "CUSTOM" : "CAMBOX");
+        Serial.println(s_mode == MODE_CAM ? "CAM" : "PUMP");
+
+    // ── Explicit setters so the dashboard doesn't have to track the current
+    //   mode to send a toggle. `MODE CAM` and `MODE PUMP` land you in that
+    //   mode regardless of prior state. `mode` (lowercase) still toggles.
+    } else if (cmd == "MODE CAM") {
+        s_running = false;
+        if (s_mode != MODE_CAM) enter_mode(MODE_CAM);
+        Serial.println("OK:MODE:CAM");
+
+    } else if (cmd == "MODE PUMP") {
+        s_running = false;
+        if (s_mode != MODE_PUMP) enter_mode(MODE_PUMP);
+        Serial.println("OK:MODE:PUMP");
+
+    } else if (cmd == "MODE") {
+        Serial.print("MODE:"); Serial.println(s_mode == MODE_CAM ? "CAM" : "PUMP");
 
     } else if (cmd.startsWith("w")) {
         int v = cmd.substring(1).toInt();
-        if (v >= 200 && v <= 3000) {
-            s_pw_us = v;
-            Serial.print("OK:PW:"); Serial.println(s_pw_us);
-        } else {
-            Serial.println("ERR:PW_RANGE_200-3000");
-        }
+        if (v >= (int)PH_PW_MIN_US && v <= (int)PH_PW_MAX_US) {
+            s_pw_us = v; Serial.print("OK:PW:"); Serial.println(s_pw_us);
+        } else Serial.println("ERR:PW_RANGE_100-5000");
 
     } else if (cmd.startsWith("f")) {
         int v = cmd.substring(1).toInt();
-        if (v >= 1 && v <= 100) {
-            s_freq_hz = v;
-            Serial.print("OK:FREQ:"); Serial.println(s_freq_hz);
-        } else {
-            Serial.println("ERR:FREQ_RANGE_1-100");
-        }
+        if (v >= 1 && v <= 20) {
+            s_freq_hz = v; Serial.print("OK:FREQ:"); Serial.println(s_freq_hz);
+        } else Serial.println("ERR:FREQ_RANGE_1-20");
 
     } else if (cmd.startsWith("a")) {
         int v = cmd.substring(1).toInt();
-        if (v >= 0 && v <= 45) {
-            s_delay_deg = v;
-            Serial.print("OK:ANGLE:"); Serial.println(s_delay_deg);
+        if (v >= 0 && v <= 359) {
+            s_angle_deg = v; Serial.print("OK:ANGLE:"); Serial.println(s_angle_deg);
+        } else Serial.println("ERR:ANGLE_RANGE_0-359");
+
+    } else if (cmd.startsWith("SET_PH")) {
+        float p, on, off;
+        if (!parse3(cmd, 7, p, on, off)) { Serial.println("PH_CONFIG_ERR:BAD_FORMAT"); return; }
+        // peak up to PH_PEAK_US_MAX (1500) so a strong opening kick is allowed;
+        // chop period (on+off) held in [50..500] µs so it stays near 10 kHz.
+        if (p < 50 || p > PH_PEAK_US_MAX || on < 1 || off < 1 ||
+            (on + off) < 50 || (on + off) > 500 ||
+            ((uint32_t)p + (uint32_t)on) < PH_PW_MIN_US) {
+            Serial.println("PH_CONFIG_ERR:OUT_OF_RANGE");
         } else {
-            Serial.println("ERR:ANGLE_RANGE_0-45");
+            g_ph_config.peak_us     = (uint32_t)p;
+            g_ph_config.hold_on_us  = (uint32_t)on;
+            g_ph_config.hold_off_us = (uint32_t)off;
+            Serial.println("PH_CONFIG_OK");
         }
 
-    } else if (cmd.startsWith("SET_PH ")) {
-        // ── SET_PH <peak_us> <period_us> <on_us> ──────────────────────
-        //    Example: SET_PH 175 40 10
-        //    Enables Peak & Hold mode and updates runtime config.
-        int sp1 = cmd.indexOf(' ', 7);
-        int sp2 = (sp1 > 0) ? cmd.indexOf(' ', sp1 + 1) : -1;
-        if (sp1 < 0 || sp2 < 0) {
-            Serial.println("PH_CONFIG_ERR:BAD_FORMAT");
-        } else {
-            uint32_t p_us  = (uint32_t)cmd.substring(7,       sp1).toInt();
-            uint32_t per   = (uint32_t)cmd.substring(sp1 + 1, sp2).toInt();
-            uint32_t on_us = (uint32_t)cmd.substring(sp2 + 1).toInt();
-            if (p_us  < 50   || p_us  > 2000 ||
-                per   < 20   || per   > 500  ||
-                on_us < 1    || on_us >= per) {
-                Serial.println("PH_CONFIG_ERR:OUT_OF_RANGE");
-            } else {
-                g_ph_config.peak_us   = p_us;
-                g_ph_config.period_us = per;
-                g_ph_config.on_us     = on_us;
-                g_use_peak_hold       = true;
-                Serial.println("PH_CONFIG_OK");
-            }
+    } else if (cmd.startsWith("PEAK")) {
+        // Convenience: set ONLY the peak phase (50..800 µs); hold chop unchanged.
+        int v = cmd.substring(4).toInt();
+        if (v >= 50 && v <= (int)PH_PEAK_US_MAX) {
+            g_ph_config.peak_us = (uint32_t)v;
+            Serial.print("OK:PEAK:"); Serial.println(v);
+        } else Serial.println("ERR:PEAK_RANGE_50-1500");
+
+    } else if (cmd.startsWith("TARGET_P")) {
+        float v = cmd.substring(8).toFloat();
+        if (v >= 0 && v <= 3000) {
+            s_target_bar = v; Serial.print("OK:TARGET_P:"); Serial.println(s_target_bar, 0);
+        } else Serial.println("ERR:TARGET_P_RANGE_0-3000");
+
+    // ── Metering Valve control (Coil1 / GPIO18) ─────────────────────
+    //   MV_ENABLE ON|OFF   — gate output; clears fault + soft-starts on ON
+    //   MV_MODE  MANUAL|PRESSURE — pick control source (default PRESSURE)
+    //   MV_DUTY  <pct>     — manual duty %, 0..MV_MAX_DUTY_PCT (30)
+    //   MV_FAULT_CLEAR     — clear a latched fault (does NOT re-enable)
+    //   MV                 — one-line status (MV:enabled,mode,manual,target,actual_pct,fault)
+    } else if (cmd == "MV") {
+        // MV:<en>,<mode>,<manual>,<target>,<actual_pct>,<fault>,<freq_hz>
+        Serial.printf("MV:%d,%s,%.1f,%.0f,%.1f,%d,%d\n",
+                      s_mv_enabled ? 1 : 0,
+                      s_mv_mode == MV_MODE_PRESSURE ? "PRESSURE" : "MANUAL",
+                      s_mv_manual_pct, s_target_bar,
+                      s_pcv_duty / (float)MV_PWM_MAX * 100.0f,
+                      s_mv_fault ? 1 : 0,
+                      s_pcv_freq);
+
+    // ── MV_FREQ <hz> — PWM CARRIER freq for the metering valve (100..1000).
+    //   Not a pulse rate — this is the continuous PWM base frequency.
+    //   Uses ledcChangeFrequency so the current duty and 12-bit resolution
+    //   are preserved across the change (no glitch, no output kick).
+    } else if (cmd.startsWith("MV_FREQ ")) {
+        int hz = cmd.substring(8).toInt();
+        if (hz < (int)MV_PWM_FREQ_MIN || hz > (int)MV_PWM_FREQ_MAX) {
+            Serial.printf("ERR:MV_FREQ_RANGE_%lu-%lu\n",
+                          (unsigned long)MV_PWM_FREQ_MIN,
+                          (unsigned long)MV_PWM_FREQ_MAX);
+            return;
         }
+        s_pcv_freq = hz;
+        if (s_mode == MODE_PUMP) {
+            // preserve duty across the change; ledcChangeFrequency keeps the
+            // resolution and current pin state, so no LOW glitch on the coil.
+            ledcChangeFrequency(PIN_COIL, (uint32_t)s_pcv_freq, MV_PWM_RES);
+        }
+        Serial.printf("OK:MV_FREQ:%d\n", s_pcv_freq);
+
+    } else if (cmd.startsWith("MV_ENABLE ")) {
+        String state = cmd.substring(10); state.trim(); state.toUpperCase();
+        if (state == "ON") {
+            if (s_mode != MODE_PUMP) { Serial.println("ERR:MV_NOT_IN_PUMP_MODE"); return; }
+            s_mv_fault      = false;    // clear old fault
+            s_mv_actual_raw = 0.0f;     // soft-start from zero
+            s_mv_enabled    = true;
+            s_mv_enable_ms  = millis();
+            Serial.println("OK:MV_ENABLE:ON");
+        } else if (state == "OFF") {
+            s_mv_enabled    = false;
+            s_mv_target_raw = 0.0f;
+            s_mv_actual_raw = 0.0f;
+            ledcWrite(PIN_COIL, 0);
+            Serial.println("OK:MV_ENABLE:OFF");
+        } else { Serial.println("ERR:MV_ENABLE_STATE_ON_OR_OFF"); return; }
+
+    } else if (cmd.startsWith("MV_MODE ")) {
+        String m = cmd.substring(8); m.trim(); m.toUpperCase();
+        if      (m == "MANUAL")   { s_mv_mode = MV_MODE_MANUAL;   pid_reset(); Serial.println("OK:MV_MODE:MANUAL"); }
+        else if (m == "PRESSURE") { s_mv_mode = MV_MODE_PRESSURE; pid_reset(); Serial.println("OK:MV_MODE:PRESSURE"); }
+        else { Serial.println("ERR:MV_MODE_MANUAL_OR_PRESSURE"); return; }
+
+    } else if (cmd.startsWith("MV_DUTY ")) {
+        float pct = cmd.substring(8).toFloat();
+        if (pct < 0.0f || pct > (float)MV_MAX_DUTY_PCT) {
+            Serial.printf("ERR:MV_DUTY_RANGE_0-%d\n", MV_MAX_DUTY_PCT); return;
+        }
+        s_mv_manual_pct = pct;
+        Serial.printf("OK:MV_DUTY:%.1f\n", pct);
+
+    } else if (cmd == "MV_FAULT_CLEAR") {
+        s_mv_fault = false;
+        Serial.println("OK:MV_FAULT_CLEAR");
+
+    } else if (cmd.startsWith("PID")) {
+        float kp, ki, kd;
+        if (!parse3(cmd, 4, kp, ki, kd)) { Serial.println("ERR:PID_BAD_FORMAT"); return; }
+        s_kp = kp; s_ki = ki; s_kd = kd;
+        Serial.printf("OK:PID:Kp=%.4f Ki=%.4f Kd=%.4f\n", kp, ki, kd);
+
+    } else if (cmd.startsWith("PSCALE")) {
+        float v0, vmax, pmax;
+        if (!parse3(cmd, 7, v0, vmax, pmax)) { Serial.println("ERR:PSCALE_BAD_FORMAT"); return; }
+        if (vmax <= v0 || pmax <= 0) { Serial.println("ERR:PSCALE_INVALID"); return; }
+        s_p_v0 = v0; s_p_vmax = vmax; s_p_pmax = pmax;
+        Serial.printf("OK:PSCALE:v0=%.3f vmax=%.3f pmax=%.0f\n", v0, vmax, pmax);
+
+    } else if (cmd.startsWith("PCV_FREQ")) {
+        int v = cmd.substring(8).toInt();
+        if (v >= 100 && v <= 20000) {
+            s_pcv_freq = v;
+            if (s_mode == MODE_PUMP) { ledcDetach(PIN_COIL); ledcAttach(PIN_COIL, s_pcv_freq, MV_PWM_RES); }
+            Serial.print("OK:PCV_FREQ:"); Serial.println(s_pcv_freq);
+        } else Serial.println("ERR:PCV_FREQ_RANGE_100-20000");
+
+    // ── COILS — report the enable mask (checked before "COIL ") ─────
+    } else if (cmd == "COILS") {
+        report_coils();
+
+    // ── COIL <1|2|3|ALL> ON|OFF — enable / disable a channel ────────
+    } else if (cmd.startsWith("COIL ")) {
+        String rest = cmd.substring(5); rest.trim();
+        int sp = rest.indexOf(' ');
+        if (sp < 0) { Serial.println("ERR:COIL_BAD_FORMAT"); return; }
+        String who   = rest.substring(0, sp);
+        String state = rest.substring(sp + 1); state.trim(); state.toUpperCase();
+
+        bool on;
+        if      (state == "ON")  on = true;
+        else if (state == "OFF") on = false;
+        else { Serial.println("ERR:COIL_STATE_ON_OR_OFF"); return; }
+
+        String w = who; w.toUpperCase();
+        if (w == "ALL") {
+            for (int i = 0; i < NUM_COILS; i++) {
+                s_coil_en[i] = on;
+                if (!on && !(i == 0 && s_mode == MODE_PUMP))
+                    digitalWrite(COIL_PINS[i], LOW);
+            }
+        } else {
+            int n = who.toInt();
+            if (n < 1 || n > NUM_COILS) { Serial.println("ERR:COIL_RANGE_1-3"); return; }
+            s_coil_en[n - 1] = on;
+            // Disabling must drop the output immediately, not at the next shot.
+            if (!on && !(n == 1 && s_mode == MODE_PUMP))
+                digitalWrite(COIL_PINS[n - 1], LOW);
+        }
+        Serial.printf("OK:COIL:%s:%s\n", who.c_str(), on ? "ON" : "OFF");
+        report_coils();
+
+    // ── FIRE <1|2|3> — one single shot, ignores the enable mask ─────
+    } else if (cmd.startsWith("FIRE")) {
+        // FIRE <n>        → one P&H shot at coil n's OWN width s_coil_pw[n-1].
+        // FIRE <n> <us>   → one shot of <us> total width (100..5000), THIS shot
+        //                   only — does not change the stored per-coil width.
+        String r = cmd.substring(4); r.trim();
+        int  sp = r.indexOf(' ');
+        int  n  = (sp < 0) ? r.toInt() : r.substring(0, sp).toInt();
+        if (n < 1 || n > NUM_COILS) { Serial.println("ERR:FIRE_RANGE_1-3"); return; }
+        long w  = (sp < 0) ? (long)s_coil_pw[n - 1] : r.substring(sp + 1).toInt();
+        if (n == 1 && s_mode == MODE_PUMP) {
+            Serial.println("ERR:FIRE_COIL1_IS_PCV_IN_PUMP_MODE"); return;
+        }
+        if (s_sq_mode) {
+            // SQMODE ON — plain square pulse; accept the wide SQ range.
+            if (w < (long)SQ_MIN_US || w > (long)SQ_MAX_US) {
+                Serial.println("ERR:FIRE_WIDTH_50-100000"); return;
+            }
+            if (!fire_square_shot((uint32_t)COIL_PINS[n - 1], (uint32_t)w)) {
+                Serial.println("ERR:SQ_BUSY"); return;
+            }
+            Serial.printf("OK:FIRE:SQ:%d:%ldus\n", n, w);
+        } else {
+            if (w < (long)PH_PW_MIN_US || w > (long)PH_PW_MAX_US) {
+                Serial.println("ERR:FIRE_WIDTH_100-5000"); return;
+            }
+            fire_peak_hold_pin(COIL_PINS[n - 1], (uint32_t)w, true);
+            Serial.printf("OK:FIRE:%d:%ldus\n", n, w);
+        }
+
+    // ── CFREQ <n> <hz> — set coil n's own free-run frequency ────────
+    } else if (cmd.startsWith("CFREQ ")) {
+        String r = cmd.substring(6); r.trim();
+        int sp = r.indexOf(' ');
+        if (sp < 0) { Serial.println("ERR:CFREQ_BAD_FORMAT"); return; }
+        int n  = r.substring(0, sp).toInt();
+        int hz = r.substring(sp + 1).toInt();
+        if (n < 1 || n > NUM_COILS) { Serial.println("ERR:CFREQ_RANGE_1-3"); return; }
+        if (hz < CFREQ_MIN || hz > CFREQ_MAX) { Serial.println("ERR:CFREQ_HZ_1-20"); return; }
+        s_coil_freq[n - 1] = hz;
+        Serial.printf("OK:CFREQ:%d:%d\n", n, hz);
+        report_coil_info();
+
+    // ── CPW <n> <us> — set coil n's own pulse width (used by CRUN + SHOT) ──
+    //   Range widened to SQUARE limits (50..100000 µs). When SQMODE is OFF the
+    //   value >5000 will be rejected at fire time by the P&H fault gate; keep
+    //   pw ≤ 5000 for P&H, up to 100000 for SQUARE.
+    } else if (cmd.startsWith("CPW ")) {
+        String r = cmd.substring(4); r.trim();
+        int sp = r.indexOf(' ');
+        if (sp < 0) { Serial.println("ERR:CPW_BAD_FORMAT"); return; }
+        int n  = r.substring(0, sp).toInt();
+        int us = r.substring(sp + 1).toInt();
+        if (n < 1 || n > NUM_COILS) { Serial.println("ERR:CPW_RANGE_1-3"); return; }
+        if (us < (int)SQ_MIN_US || us > (int)SQ_MAX_US) {
+            Serial.println("ERR:CPW_WIDTH_50-100000"); return;
+        }
+        s_coil_pw[n - 1] = us;
+        Serial.printf("OK:CPW:%d:%d\n", n, us);
+        report_coil_info();
+
+    // ── CRUN <n> [<ms>] — run coil n at its freq for <ms> (0/omit = ∞) ──
+    } else if (cmd.startsWith("CRUN ")) {
+        String r = cmd.substring(5); r.trim();
+        int sp = r.indexOf(' ');
+        int  n  = (sp < 0) ? r.toInt() : r.substring(0, sp).toInt();
+        long ms = (sp < 0) ? 0        : r.substring(sp + 1).toInt();
+        if (n < 1 || n > NUM_COILS) { Serial.println("ERR:CRUN_RANGE_1-3"); return; }
+        if (n == 1 && s_mode == MODE_PUMP) {
+            Serial.println("ERR:CRUN_COIL1_IS_PCV_IN_PUMP_MODE"); return;
+        }
+        if (ms < 0) ms = 0;
+        int i = n - 1;
+        // ── Thermal duty-cycle guard for the injector MOSFETs ──
+        // duty_pct = pw_us × freq_hz / 10000. Cap at COIL_MAX_DUTY_PCT so a
+        // typo like "CFREQ 3 20 ; CPW 3 5000" (10% — fine) is allowed, but a
+        // pathological setting can't cook the coil/ballast. Sizing rationale:
+        // real diesel injectors fire at ≤ 30 Hz × ≤ 2 ms ≈ 6% duty; even the
+        // firmware caps (CFREQ_MAX=20, CPW_MAX=5000) give 10% worst case, so
+        // a 20% cap leaves generous headroom for bench trials.
+        const uint32_t COIL_MAX_DUTY_PCT = 20;
+        uint32_t duty_x100 = (uint32_t)s_coil_pw[i] * (uint32_t)s_coil_freq[i] / 100;  // %*100
+        if (duty_x100 > COIL_MAX_DUTY_PCT * 100) {
+            Serial.printf("ERR:CRUN_DUTY_%lu.%02lu%%_EXCEEDS_%lu%%_CAP  (pw=%dus freq=%dHz)\n",
+                          (unsigned long)(duty_x100/100), (unsigned long)(duty_x100%100),
+                          (unsigned long)COIL_MAX_DUTY_PCT,
+                          s_coil_pw[i], s_coil_freq[i]);
+            return;
+        }
+        uint64_t now = esp_timer_get_time();
+        s_coil_pulses[i]  = 0;                 // count pulses for THIS run
+        s_coil_next_us[i] = now;               // fire immediately
+        s_coil_stop_us[i] = (ms > 0) ? (now + (uint64_t)ms * 1000ULL) : 0;
+        s_coil_running[i] = true;
+        Serial.printf("OK:CRUN:%d:%dHz:%dus:%ldms:%s  (duty %lu.%02lu%%)\n",
+                      n, s_coil_freq[i], s_coil_pw[i], ms,
+                      s_sq_mode ? "SQUARE" : "P&H",
+                      (unsigned long)(duty_x100/100), (unsigned long)(duty_x100%100));
+        report_coil_info();
+
+    // ── CSTOP <n|ALL> — stop coil n's runner immediately ────────────
+    } else if (cmd.startsWith("CSTOP")) {
+        String r = cmd.substring(5); r.trim();
+        if (r.length() == 0) { Serial.println("ERR:CSTOP_NEEDS_ARG"); return; }
+        String u = r; u.toUpperCase();
+        if (u == "ALL") {
+            for (int i = 0; i < NUM_COILS; i++) {
+                s_coil_running[i] = false;
+                if (!(i == 0 && s_mode == MODE_PUMP)) digitalWrite(COIL_PINS[i], LOW);
+            }
+            Serial.println("OK:CSTOP:ALL");
+        } else {
+            int n = r.toInt();
+            if (n < 1 || n > NUM_COILS) { Serial.println("ERR:CSTOP_RANGE_1-3"); return; }
+            s_coil_running[n - 1] = false;
+            if (!(n == 1 && s_mode == MODE_PUMP)) digitalWrite(COIL_PINS[n - 1], LOW);
+            Serial.printf("OK:CSTOP:%d\n", n);
+        }
+        report_coil_info();
+        emit_cpulses();
+
+    // ── CINFO — report per-coil freq + run state ────────────────────
+    } else if (cmd == "CINFO") {
+        report_coil_info();
+
+    // ── SHOT — one precise plain pulse on the valve (checked before "SHOT ") ──
+    } else if (cmd == "SHOT") {
+        if (s_mode == MODE_PUMP) { Serial.println("ERR:SHOT_NOT_IN_PUMP_MODE"); return; }
+        if (!fire_single_shot(s_shot_us)) {
+            Serial.println(s_shot_busy ? "ERR:SHOT_BUSY" : "ERR:SHOT_RANGE_500-5000");
+            return;
+        }
+        Serial.printf("OK:SHOT:%luus\n", (unsigned long)s_shot_us);
+
+    // ── SHOT <us> — set duration (500..5000) AND fire one pulse ─────
+    } else if (cmd.startsWith("SHOT ")) {
+        long v = cmd.substring(5).toInt();
+        if (v < (long)SHOT_MIN_US || v > (long)SHOT_MAX_US) {
+            Serial.println("ERR:SHOT_RANGE_500-5000"); return;
+        }
+        if (s_mode == MODE_PUMP) { Serial.println("ERR:SHOT_NOT_IN_PUMP_MODE"); return; }
+        s_shot_us = (uint32_t)v;
+        if (!fire_single_shot(s_shot_us)) { Serial.println("ERR:SHOT_BUSY"); return; }
+        Serial.printf("OK:SHOT:%luus\n", (unsigned long)s_shot_us);
+
+    // ── SQFIRE <n> <us> — one plain SQUARE pulse on any coil, ANY width ──
+    //   Strongest possible pulse: full HIGH for the entire width (no chop).
+    //   Range 50..100000 µs. In PUMP mode coil 1 is refused (LEDC owns GPIO18).
+    } else if (cmd.startsWith("SQFIRE ")) {
+        String r = cmd.substring(7); r.trim();
+        int sp = r.indexOf(' ');
+        if (sp < 0) { Serial.println("ERR:SQFIRE_BAD_FORMAT"); return; }
+        int  n  = r.substring(0, sp).toInt();
+        long us = r.substring(sp + 1).toInt();
+        if (n < 1 || n > NUM_COILS) { Serial.println("ERR:SQFIRE_RANGE_1-3"); return; }
+        if (n == 1 && s_mode == MODE_PUMP) {
+            Serial.println("ERR:SQFIRE_COIL1_IS_PCV_IN_PUMP_MODE"); return;
+        }
+        if (us < (long)SQ_MIN_US || us > (long)SQ_MAX_US) {
+            Serial.println("ERR:SQFIRE_WIDTH_50-100000"); return;
+        }
+        if (!fire_square_shot((uint32_t)COIL_PINS[n - 1], (uint32_t)us)) {
+            Serial.println("ERR:SQ_BUSY"); return;
+        }
+        Serial.printf("OK:SQFIRE:%d:%ldus\n", n, us);
+
+    // ── SQMODE ON|OFF — global: FIRE + CRUN fire SQUARE instead of P&H ──
+    } else if (cmd == "SQMODE") {
+        Serial.printf("SQMODE:%d\n", s_sq_mode ? 1 : 0);
+
+    } else if (cmd.startsWith("SQMODE ")) {
+        String state = cmd.substring(7); state.trim(); state.toUpperCase();
+        if      (state == "ON")  { s_sq_mode = true;  Serial.println("OK:SQMODE:ON"); }
+        else if (state == "OFF") { s_sq_mode = false; Serial.println("OK:SQMODE:OFF"); }
+        else { Serial.println("ERR:SQMODE_STATE_ON_OR_OFF"); return; }
+        Serial.printf("SQMODE:%d\n", s_sq_mode ? 1 : 0);
+
+    // ── HARD <n> <us> — alias for SQFIRE with the P&H 100..5000 µs range.
+    //   Same implementation as SQFIRE (plain 100 % HIGH, hardware-timed OFF
+    //   edge, GPIO26 frames the pulse). Kept narrower on purpose: HARD is the
+    //   direct P&H replacement; SQFIRE goes up to 100 ms if you need it.
+    } else if (cmd.startsWith("HARD ")) {
+        String r = cmd.substring(5); r.trim();
+        int sp = r.indexOf(' ');
+        if (sp < 0) { Serial.println("ERR:HARD_BAD_FORMAT"); return; }
+        int  n  = r.substring(0, sp).toInt();
+        long us = r.substring(sp + 1).toInt();
+        if (n < 1 || n > NUM_COILS) { Serial.println("ERR:HARD_RANGE_1-3"); return; }
+        if (n == 1 && s_mode == MODE_PUMP) {
+            Serial.println("ERR:HARD_COIL1_IS_PCV_IN_PUMP_MODE"); return;
+        }
+        if (us < (long)PH_PW_MIN_US || us > (long)PH_PW_MAX_US) {
+            Serial.println("ERR:HARD_WIDTH_100-5000"); return;
+        }
+        if (!fire_square_shot((uint32_t)COIL_PINS[n - 1], (uint32_t)us)) {
+            Serial.println("ERR:HARD_BUSY"); return;
+        }
+        Serial.printf("OK:HARD:%d:%ldus\n", n, us);
+
+    // ── MAXPOWER — alias for SQMODE (report / set). ON = FIRE + CRUN fire
+    //   SOLID 100 % HIGH for the whole width instead of P&H — the hottest,
+    //   strongest mode. Same s_sq_mode flag; both names read the same state.
+    } else if (cmd == "MAXPOWER") {
+        Serial.printf("MAXPOWER:%d\n", s_sq_mode ? 1 : 0);
+
+    } else if (cmd.startsWith("MAXPOWER ")) {
+        String state = cmd.substring(9); state.trim(); state.toUpperCase();
+        if      (state == "ON")  { s_sq_mode = true;  Serial.println("OK:MAXPOWER:ON"); }
+        else if (state == "OFF") { s_sq_mode = false; Serial.println("OK:MAXPOWER:OFF"); }
+        else { Serial.println("ERR:MAXPOWER_STATE_ON_OR_OFF"); return; }
+        Serial.printf("MAXPOWER:%d\n", s_sq_mode ? 1 : 0);
+
+    // ── RELAY — MANUAL 12 V / 28 V Peak-supply select (checked before "RELAY ") ──
+    } else if (cmd == "RELAY") {
+        Serial.printf("RELAY:%d\n", s_relay_on ? 1 : 0);
+
+    } else if (cmd.startsWith("RELAY ")) {
+        String state = cmd.substring(6); state.trim(); state.toUpperCase();
+        if (state == "ON") {
+            digitalWrite(PIN_RELAY, HIGH); s_relay_on = true;
+            Serial.println("OK:RELAY:ON");
+            Serial.println("RELAY:1");
+        } else if (state == "OFF") {
+            digitalWrite(PIN_RELAY, LOW); s_relay_on = false;
+            Serial.println("OK:RELAY:OFF");
+            Serial.println("RELAY:0");
+        } else {
+            Serial.println("ERR:RELAY_STATE_ON_OR_OFF");
+        }
+
+    // ── READPIN <n> — one-shot digital read of GPIO n (diagnostic). ──
+    //   Uses INPUT_PULLUP briefly, then restores the pin to its prior mode
+    //   for pins we already manage (5 = proximity in, coils = outputs, etc.).
+    } else if (cmd.startsWith("READPIN ")) {
+        int n = cmd.substring(8).toInt();
+        if (n < 0 || n > 39) { Serial.println("ERR:READPIN_RANGE_0-39"); return; }
+        pinMode(n, INPUT_PULLUP);
+        int v = digitalRead(n);
+        Serial.printf("READPIN:%d:%d\n", n, v);
+        // restore PIN_PROX to its running mode
+        if (n == PIN_PROX) pinMode(PIN_PROX, INPUT_PULLUP);
+
+    // ── PADC — raw pressure-sensor ADC diagnostic ─────────────────────
+    //   Reports the raw mV on GPIO14, the mapped bar from PSCALE, and the
+    //   current PSCALE parameters. Averages 10 samples to cut ADC noise.
+    } else if (cmd == "PADC") {
+        long sum = 0;
+        for (int i = 0; i < 10; i++) { sum += analogReadMilliVolts(PIN_PRESSURE); delay(2); }
+        int mv = (int)(sum / 10);
+        float v = mv / 1000.0f;
+        float span = s_p_vmax - s_p_v0;
+        float bar = (span > 0.0001f) ? (v - s_p_v0) / span * s_p_pmax : 0.0f;
+        Serial.printf("PADC:mV=%d,V=%.3f,bar=%.1f,v0=%.3f,vmax=%.3f,pmax=%.0f\n",
+                      mv, v, bar < 0 ? 0 : bar, s_p_v0, s_p_vmax, s_p_pmax);
+
+    // ── PROBE <n> — stream GPIO n level every 100 ms for 10 s (diagnostic). ──
+    } else if (cmd.startsWith("PROBE ")) {
+        int n = cmd.substring(6).toInt();
+        if (n < 0 || n > 39) { Serial.println("ERR:PROBE_RANGE_0-39"); return; }
+        pinMode(n, INPUT_PULLUP);
+        Serial.printf("PROBE_START:%d\n", n);
+        unsigned long stop_ms = millis() + 10000;
+        int prev = -1;
+        while (millis() < stop_ms) {
+            int v = digitalRead(n);
+            if (v != prev) {
+                Serial.printf("PROBE:%d:%d:%lu\n", n, v, millis());
+                prev = v;
+            }
+            delay(5);
+        }
+        Serial.println("PROBE_END");
+        if (n == PIN_PROX) pinMode(PIN_PROX, INPUT_PULLUP);
+
+    } else if (cmd == "STATUS") {
+        Serial.println("── STATUS ──────────────────────────────");
+        Serial.printf("mode      : %s\n", s_mode == MODE_CAM ? "CAM" : "PUMP");
+        Serial.printf("running   : %s\n", s_running ? "yes" : "no");
+        Serial.printf("coil1     : GPIO%d  %s  freq=%dHz  pw=%dus  %s%s\n", COIL1_PIN,
+                      s_coil_en[0] ? "ENABLED" : "disabled", s_coil_freq[0], s_coil_pw[0],
+                      s_coil_running[0] ? "RUNNING" : "idle",
+                      s_mode == MODE_PUMP ? "  (PCV/LEDC — not P&H fired)" : "");
+        Serial.printf("coil2     : GPIO%d  %s  freq=%dHz  pw=%dus  %s\n", COIL2_PIN,
+                      s_coil_en[1] ? "ENABLED" : "disabled", s_coil_freq[1], s_coil_pw[1],
+                      s_coil_running[1] ? "RUNNING" : "idle");
+        Serial.printf("coil3     : GPIO%d  %s  freq=%dHz  pw=%dus  %s\n", COIL3_PIN,
+                      s_coil_en[2] ? "ENABLED" : "disabled", s_coil_freq[2], s_coil_pw[2],
+                      s_coil_running[2] ? "RUNNING" : "idle");
+        Serial.printf("relay     : GPIO%d  %s\n", PIN_RELAY,
+                      s_relay_on ? "ON(HIGH)" : "OFF(LOW)");
+        Serial.printf("shot_us   : %lu  (single-pulse valve, %lu..%lu us)\n",
+                      (unsigned long)s_shot_us,
+                      (unsigned long)SHOT_MIN_US, (unsigned long)SHOT_MAX_US);
+        Serial.printf("sqmode    : %s  (FIRE + CRUN use SQUARE when ON, 50..100000 us)\n",
+                      s_sq_mode ? "ON" : "off");
+        Serial.printf("maxpower  : %s  (alias of sqmode — solid 100%% HIGH, no chop)\n",
+                      s_sq_mode ? "ON" : "off");
+        Serial.printf("pulse_us  : %d\n", s_pw_us);
+        Serial.printf("angle_deg : %d\n", s_angle_deg);
+        Serial.printf("freq_hz   : %d\n", s_freq_hz);
+        Serial.printf("rpm_meas  : %d\n", current_rpm());
+        Serial.printf("P&H       : peak=%luus on=%luus off=%luus (%.1fkHz)\n",
+                      (unsigned long)g_ph_config.peak_us,
+                      (unsigned long)g_ph_config.hold_on_us,
+                      (unsigned long)g_ph_config.hold_off_us,
+                      1000.0f / (g_ph_config.hold_on_us + g_ph_config.hold_off_us));
+        Serial.printf("target_bar: %.0f\n", s_target_bar);
+        Serial.printf("actual_bar: %.1f\n", s_actual_bar);
+        Serial.printf("pcv_duty  : %.0f/%lu  freq=%dHz  (%.1f%% raw)\n",
+                      s_pcv_duty, (unsigned long)MV_PWM_MAX, s_pcv_freq,
+                      s_pcv_duty / (float)MV_PWM_MAX * 100.0f);
+        Serial.printf("MV        : %s  mode=%s  manual=%.1f%%  target_bar=%.0f  cap=%d%%  fault=%s\n",
+                      s_mv_enabled ? "ENABLED" : "disabled",
+                      s_mv_mode == MV_MODE_PRESSURE ? "PRESSURE" : "MANUAL",
+                      s_mv_manual_pct, s_target_bar, MV_MAX_DUTY_PCT,
+                      s_mv_fault ? "YES" : "no");
+        Serial.printf("PID       : Kp=%.4f Ki=%.4f Kd=%.4f\n", s_kp, s_ki, s_kd);
+        Serial.printf("PSCALE    : v0=%.3f vmax=%.3f pmax=%.0f\n", s_p_v0, s_p_vmax, s_p_pmax);
+        Serial.println("────────────────────────────────────────");
 
     } else {
         Serial.print("ERR:UNKNOWN:"); Serial.println(cmd);
@@ -589,16 +1354,15 @@ void process_command(const String& cmd) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  BUZZER  —  non-blocking, duration-based
+//  BUZZER — non-blocking
 // ════════════════════════════════════════════════════════════════════
 void beep_start(int ms) {
     digitalWrite(PIN_BUZZER, HIGH);
-    s_beep_end = millis() + (unsigned long)ms;
+    s_buzz_end_ms = millis() + (unsigned long)ms;
 }
-
 void beep_update() {
-    if (s_beep_end > 0 && millis() >= s_beep_end) {
+    if (s_buzz_end_ms > 0 && millis() >= s_buzz_end_ms) {
         digitalWrite(PIN_BUZZER, LOW);
-        s_beep_end = 0;
+        s_buzz_end_ms = 0;
     }
 }

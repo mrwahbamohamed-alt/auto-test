@@ -1,0 +1,3993 @@
+﻿import sys
+import time
+import logging
+import socket
+import datetime
+import json
+import os
+import csv as _csv
+from pathlib import Path
+from collections import deque
+
+# Hide the console window on Windows (no black terminal popping up)
+if sys.platform == 'win32':
+    import ctypes
+    ctypes.windll.user32.ShowWindow(
+        ctypes.windll.kernel32.GetConsoleWindow(), 0)
+
+logging.basicConfig(level=logging.WARNING)   # suppress INFO logs to console
+
+from PyQt6.QtCore import QObject, pyqtSignal, QThread, Qt, QTimer
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QGroupBox, QLabel, QComboBox, QPushButton, QSlider,
+    QSpinBox, QDoubleSpinBox, QRadioButton, QButtonGroup, QLCDNumber,
+    QMessageBox, QFrame, QFileDialog, QScrollArea, QCheckBox, QLineEdit
+)
+from PyQt6.QtGui import QFont, QColor, QPainter, QPixmap, QPalette
+
+import serial
+import serial.tools.list_ports
+import pyqtgraph as pg
+
+# logging already configured above (WARNING level, no console output)
+
+# ── constants ─────────────────────────────────────────────────────────
+N_SAMPLES    = 300
+TELEMETRY_MS = 10
+GRAPH_FPS    = 30
+
+# ══════════════════════════════════════════════════════════════════════
+#  PRESSURE CALIBRATION — all done in Python (ESP32 sends raw VX4 mV)
+#  Sensor supply : 5V
+#  VP @ 0 BAR   : 0.3 V   (sensor zero offset)
+#  VP @ 1600 BAR: 5.0 V   (sensor full-scale)
+#  Divider      : VX4 = VP × 0.297  →  VP = VX4 / 0.297
+#  EMA alpha    : 0.02 (strong smoothing, eliminates EMI jitter)
+#  P_CAL_OFFSET : fine zero trim in BAR — increase if display reads
+#                 non-zero at rest (e.g. P_CAL_OFFSET = -5.0)
+# ══════════════════════════════════════════════════════════════════════
+# ── Calibration points (measured) ────────────────────────────────────
+#   0 BAR  → VX4 = 112 mV
+#   260 BAR→ VX4 = 227 mV
+#   540 BAR→ VX4 = 339 mV
+#   slope  = least-squares fit forcing through zero
+P_VX4_ZERO_MV   = 112.0   # mV ← عدّل بـ SET ZERO أو يدوياً
+P_SLOPE_BAR_MV  = 2.355   # BAR/mV ← slope من regression الثلاث نقاط
+P_BAR_MAX_VAL   = 1600.0
+P_EMA_ALPHA     = 0.20    # ← 0.01=أبطأ/أثبت  0.1=أسرع
+P_DEAD_BAND     = 5.0     # BAR ← أقل من ده = صفر
+P_CAL_OFFSET    = -9.0    # fine trim (BAR) ← عدّل هنا لو القراية عالية أو واطية
+RPM_DIVISOR     = 2.0     # ← عدّل هنا لو قراية الـ RPM غلط (actual ÷ displayed)
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Safety alarm thresholds ───────────────────────────────────────────
+PRESSURE_WARN  = 1400.0   # BAR  — amber warning  (~87% of 1600)
+PRESSURE_ALARM = 1600.0   # BAR  — red alarm     (sensor max)
+RPM_WARN       =  3000    # RPM  — amber warning
+RPM_ALARM      =  4000    # RPM  — red alarm
+
+# ── Test Plan Presets  (Solenoid Common Rail only — no Piezo) ─────────
+# Format: { display_name : (pulse_width_µs, freq_hz, delay_deg) }
+PRESETS = {
+    "-- Select Preset --":     None,
+    "Bosch CRI 1  (Gen 1)":    (1050, 25, 0),
+    "Bosch CRI 2  (Gen 2)":    ( 850, 25, 5),
+    "Bosch CRI 3  (Gen 3)":    ( 650, 25, 8),
+    "Delphi DFI 1.x":          ( 950, 25, 3),
+    "Delphi DFI 2.x":          ( 800, 25, 4),
+    "Denso HP3":               (1100, 25, 2),
+    "Denso HP4":               ( 750, 25, 4),
+    "Siemens / Conti VDO":     ( 880, 25, 6),
+}
+
+# ── Apple-inspired Industrial Dark Design System ──────────────────────
+BG        = '#121214'   # Main window — Deep Charcoal
+PANEL     = '#1C1C1E'   # Cards / GroupBoxes
+HEADER    = '#0A0A0C'   # Header bar
+BORDER    = '#2C2C2E'   # Subtle card border
+BORDER2   = '#3A3A3C'   # Widget / interactive borders
+
+PH_GREEN  = '#30D158'   # Muted Emerald — success / running
+PH_AMBER  = '#FF9F0A'   # System Orange — warnings
+PH_BLUE   = '#0A84FF'   # Tech Blue — primary accent
+PH_PURPLE = '#BF5AF2'   # System Purple — RPM
+PH_RED    = '#FF453A'   # Deep Crimson — alarms / disconnected
+PH_CYAN   = '#30B0C7'   # Sleek Teal — sliders / radio
+
+TXT_PRI   = '#E5E5EA'   # High-contrast off-white
+TXT_SEC   = '#8E8E93'   # Muted gray — secondary text / units
+TXT_DIM   = '#48484A'   # Very muted — dim labels
+
+# ── Oscilloscope graph colors (match window BG for seamless blend) ─────
+G_BG    = '#121214'   # Exact BG match — no visible seam
+G_AMBER = '#FF9F0A'   # Pressure trace
+G_GREEN = '#30D158'   # Injection trace
+G_BLUE  = '#30B0C7'   # CAM trace
+
+# ── data ──────────────────────────────────────────────────────────────
+X_DATA = list(range(N_SAMPLES))
+X_STEP = []
+for _i in range(N_SAMPLES):
+    X_STEP.extend([_i, _i + 0.999])
+
+def make_step(buf):
+    out = []
+    for v in buf:
+        out.extend([v, v])
+    return out
+
+# ══════════════════════════════════════════════════════════════════════
+#  STYLESHEETS  (dark default + light mode)
+# ══════════════════════════════════════════════════════════════════════
+STYLE_DARK = f"""
+/* ── Base ─────────────────────────────────────────────────────────── */
+QMainWindow, QWidget {{
+    background: {BG};
+    color: {TXT_PRI};
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 12px;
+}}
+
+/* ── Cards / GroupBoxes ───────────────────────────────────────────── */
+QGroupBox {{
+    background: {PANEL};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    margin-top: 24px;
+    padding-top: 4px;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 6px;
+    background: {PANEL};
+    color: {TXT_DIM};
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}}
+
+/* ── Labels ───────────────────────────────────────────────────────── */
+QLabel {{
+    color: {TXT_SEC};
+    font-size: 12px;
+    background: transparent;
+}}
+
+/* ── ComboBox ─────────────────────────────────────────────────────── */
+QComboBox {{
+    background: {BORDER};
+    border: 1px solid {BORDER2};
+    border-radius: 6px;
+    padding: 5px 34px 5px 10px;
+    color: {TXT_PRI};
+    font-size: 12px;
+    font-family: 'Consolas', monospace;
+    min-height: 28px;
+    selection-background-color: {PH_BLUE};
+    selection-color: #FFFFFF;
+}}
+QComboBox:hover {{
+    border-color: {PH_BLUE};
+    background: #1E1E22;
+}}
+QComboBox:focus {{
+    border: 1px solid {PH_BLUE};
+    background: #1A1A20;
+}}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 28px;
+    border-left: 1px solid {BORDER2};
+    border-radius: 0 6px 6px 0;
+    background: {BORDER2};
+}}
+QComboBox::drop-down:hover {{
+    background: {PH_BLUE};
+}}
+QComboBox::down-arrow {{
+    image: none;
+    width: 0;
+    height: 0;
+}}
+QComboBox QAbstractItemView {{
+    background: {PANEL};
+    border: 1px solid {BORDER2};
+    border-radius: 6px;
+    color: {TXT_PRI};
+    selection-background-color: {PH_BLUE};
+    selection-color: #FFFFFF;
+    padding: 2px;
+    outline: none;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 6px 10px;
+    min-height: 26px;
+    border-radius: 4px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background: {BORDER2};
+    color: {TXT_PRI};
+}}
+
+/* ── SpinBox ──────────────────────────────────────────────────────── */
+QSpinBox {{
+    background: {BORDER};
+    border: 1px solid {BORDER2};
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: {TXT_PRI};
+    font-size: 12px;
+    font-family: 'Consolas', monospace;
+    min-height: 28px;
+    selection-background-color: {PH_BLUE};
+}}
+QSpinBox:hover {{
+    border-color: {PH_BLUE};
+    background: #1E1E22;
+}}
+QSpinBox:focus {{
+    border: 1px solid {PH_BLUE};
+    background: #1A1A20;
+}}
+QSpinBox::up-button, QSpinBox::down-button {{
+    background: {BORDER2};
+    border: none;
+    width: 18px;
+}}
+QSpinBox::up-button {{ border-radius: 0 6px 0 0; }}
+QSpinBox::down-button {{ border-radius: 0 0 6px 0; }}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    background: {PH_BLUE};
+}}
+QSpinBox::up-arrow, QSpinBox::down-arrow {{ image: none; width: 0; height: 0; }}
+
+/* ── Slider ───────────────────────────────────────────────────────── */
+QSlider::groove:horizontal {{
+    border: none;
+    height: 4px;
+    background: {BORDER};
+    border-radius: 2px;
+}}
+QSlider::handle:horizontal {{
+    background: {PH_CYAN};
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+    border: 2px solid {BG};
+}}
+QSlider::handle:horizontal:hover {{ background: #3EC5D8; }}
+QSlider::sub-page:horizontal {{
+    background: {PH_CYAN};
+    border-radius: 2px;
+}}
+
+/* ── PushButton (general) ─────────────────────────────────────────── */
+QPushButton {{
+    background: {BORDER};
+    border: 1px solid {BORDER2};
+    color: {TXT_SEC};
+    padding: 7px 16px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 500;
+}}
+QPushButton:hover {{
+    background: {BORDER2};
+    color: {TXT_PRI};
+    border-color: {PH_BLUE};
+}}
+QPushButton:pressed {{
+    background: {BG};
+    color: {TXT_PRI};
+    border-color: {PH_BLUE};
+}}
+QPushButton:disabled {{
+    color: {TXT_DIM};
+    border-color: {BORDER};
+    background: {PANEL};
+}}
+
+/* ── LCD Number ───────────────────────────────────────────────────── */
+QLCDNumber {{
+    background: {G_BG};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    color: {TXT_PRI};
+}}
+
+/* ── Radio Button ─────────────────────────────────────────────────── */
+QRadioButton {{
+    color: {TXT_SEC};
+    font-size: 12px;
+    spacing: 8px;
+    background: transparent;
+}}
+QRadioButton:hover {{ color: {TXT_PRI}; }}
+QRadioButton::indicator {{
+    width: 15px;
+    height: 15px;
+    border: 2px solid {BORDER2};
+    border-radius: 8px;
+    background: {BORDER};
+}}
+QRadioButton::indicator:checked {{
+    background: {PH_CYAN};
+    border-color: {PH_CYAN};
+}}
+QRadioButton::indicator:hover {{ border-color: {PH_BLUE}; }}
+
+/* ── Scrollbar ────────────────────────────────────────────────────── */
+QScrollBar:vertical {{
+    background: {PANEL};
+    width: 8px;
+    margin: 0;
+    border-radius: 4px;
+}}
+QScrollBar::handle:vertical {{
+    background: {BORDER2};
+    border-radius: 4px;
+    min-height: 24px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {TXT_DIM}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{ height: 0; }}
+
+/* ── ToolTip ──────────────────────────────────────────────────────── */
+QToolTip {{
+    background: {PANEL};
+    color: {TXT_PRI};
+    border: 1px solid {BORDER2};
+    border-radius: 5px;
+    font-size: 11px;
+    padding: 5px 8px;
+}}
+
+/* ── Separator ────────────────────────────────────────────────────── */
+QFrame[frameShape="4"] {{ color: {BORDER2}; }}
+"""
+
+STYLE_LIGHT = """
+/* ── Base ─────────────────────────────────────────────────────────── */
+QMainWindow, QWidget {
+    background: #F8F9FA;
+    color: #1C1C1E;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 12px;
+}
+
+/* ── Cards / GroupBoxes ───────────────────────────────────────────── */
+QGroupBox {
+    background: #FFFFFF;
+    border: 1px solid #E0E0E6;
+    border-radius: 8px;
+    margin-top: 24px;
+    padding-top: 4px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 6px;
+    background: #FFFFFF;
+    color: #0056B3;
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
+
+/* ── Labels ───────────────────────────────────────────────────────── */
+QLabel {
+    color: #1C1C1E;
+    font-size: 12px;
+    font-weight: 500;
+    background: transparent;
+}
+
+/* ── ComboBox ─────────────────────────────────────────────────────── */
+QComboBox {
+    background: #FFFFFF;
+    border: 1px solid #D1D1D6;
+    border-radius: 6px;
+    padding: 5px 34px 5px 10px;
+    color: #1C1C1E;
+    font-size: 12px;
+    font-family: 'Consolas', monospace;
+    min-height: 28px;
+    selection-background-color: #0A84FF;
+    selection-color: #FFFFFF;
+}
+QComboBox:hover {
+    border-color: #0A84FF;
+    background: #F5F5F9;
+}
+QComboBox:focus {
+    border: 1px solid #0A84FF;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 28px;
+    border-left: 1px solid #D1D1D6;
+    border-radius: 0 6px 6px 0;
+    background: #EBEBF0;
+}
+QComboBox::drop-down:hover { background: #0A84FF; }
+QComboBox::down-arrow { image: none; width: 0; height: 0; }
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    border: 1px solid #D1D1D6;
+    border-radius: 6px;
+    color: #1C1C1E;
+    selection-background-color: #0A84FF;
+    selection-color: #FFFFFF;
+    padding: 2px;
+    outline: none;
+}
+QComboBox QAbstractItemView::item {
+    padding: 6px 10px;
+    min-height: 26px;
+    border-radius: 4px;
+}
+QComboBox QAbstractItemView::item:hover { background: #F2F2F7; }
+
+/* ── SpinBox ──────────────────────────────────────────────────────── */
+QSpinBox {
+    background: #FFFFFF;
+    border: 1px solid #D1D1D6;
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: #1C1C1E;
+    font-size: 12px;
+    font-family: 'Consolas', monospace;
+    min-height: 28px;
+    selection-background-color: #0A84FF;
+}
+QSpinBox:hover { border-color: #0A84FF; background: #F5F5F9; }
+QSpinBox:focus { border: 1px solid #0A84FF; }
+QSpinBox::up-button, QSpinBox::down-button {
+    background: #EBEBF0; border: none; width: 18px;
+}
+QSpinBox::up-button { border-radius: 0 6px 0 0; }
+QSpinBox::down-button { border-radius: 0 0 6px 0; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #0A84FF; }
+QSpinBox::up-arrow, QSpinBox::down-arrow { image: none; width: 0; height: 0; }
+
+/* ── Slider ───────────────────────────────────────────────────────── */
+QSlider::groove:horizontal {
+    border: none; height: 4px;
+    background: #D1D1D6; border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #0A84FF; width: 14px; height: 14px;
+    margin: -5px 0; border-radius: 7px; border: 2px solid #F8F9FA;
+}
+QSlider::handle:horizontal:hover { background: #0077E6; }
+QSlider::sub-page:horizontal { background: #0A84FF; border-radius: 2px; }
+
+/* ── PushButton (general) ─────────────────────────────────────────── */
+QPushButton {
+    background: #FFFFFF;
+    border: 1px solid #D1D1D6;
+    color: #1C1C1E;
+    padding: 7px 16px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 500;
+}
+QPushButton:hover {
+    background: #F2F2F7;
+    color: #1C1C1E;
+    border-color: #0A84FF;
+}
+QPushButton:pressed {
+    background: #E5E5EA;
+    color: #1C1C1E;
+    border-color: #0A84FF;
+}
+QPushButton:disabled {
+    color: #AEAEB2;
+    border-color: #E5E5EA;
+    background: #F8F9FA;
+}
+
+/* ── LCD Number (stays dark — better readability for digits) ──────── */
+QLCDNumber {
+    background: #1C1C1E;
+    border: 1px solid #D1D1D6;
+    border-radius: 6px;
+}
+
+/* ── Radio Button ─────────────────────────────────────────────────── */
+QRadioButton {
+    color: #1C1C1E;
+    font-size: 12px;
+    spacing: 8px;
+    background: transparent;
+}
+QRadioButton:hover { color: #000000; }
+QRadioButton::indicator {
+    width: 15px; height: 15px;
+    border: 2px solid #D1D1D6;
+    border-radius: 8px;
+    background: #FFFFFF;
+}
+QRadioButton::indicator:checked { background: #0A84FF; border-color: #0A84FF; }
+QRadioButton::indicator:hover { border-color: #0A84FF; }
+
+/* ── Scrollbar ────────────────────────────────────────────────────── */
+QScrollBar:vertical {
+    background: #F2F2F7; width: 8px; margin: 0; border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background: #C7C7CC; border-radius: 4px; min-height: 24px;
+}
+QScrollBar::handle:vertical:hover { background: #AEAEB2; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal { height: 0; }
+
+/* ── ToolTip ──────────────────────────────────────────────────────── */
+QToolTip {
+    background: #FFFFFF; color: #1C1C1E;
+    border: 1px solid #D1D1D6; border-radius: 5px;
+    font-size: 11px; padding: 5px 8px;
+}
+
+/* ── Separator ────────────────────────────────────────────────────── */
+QFrame[frameShape="4"] { color: #D1D1D6; }
+"""
+
+
+class CylinderGauge(QWidget):
+    """
+    Draws a vertical graduated cylinder (like a lab measuring tube).
+    Shows: target volume, acceptable range (green zone), and
+    the user-entered actual measured value (blue fill).
+    """
+
+    def __init__(self, label: str, unit: str,
+                 target: float, low: float, high: float,
+                 scale_max: float = None, parent=None):
+        super().__init__(parent)
+        self._label   = label
+        self._unit    = unit
+        self._target  = target
+        self._low     = low
+        self._high    = high
+        self._scale   = scale_max or max(high * 1.25, target * 1.5, 5.0)
+        self._actual  = None        # None = not measured yet
+        self._dark    = True        # theme — drives bg / text colors
+        self.setMinimumSize(45, 120)
+
+    def set_actual(self, value: float | None):
+        self._actual = value
+        self.update()
+
+    def set_dark(self, dark: bool):
+        self._dark = dark
+        self.update()
+
+    def set_spec(self, target, low, high, scale_max=None):
+        self._target = target
+        self._low    = low
+        self._high   = high
+        self._scale  = scale_max or max(high * 1.25, target * 1.5, 5.0)
+        self._actual = None
+        self.update()
+
+    # ─────────────────────────────────────────────────────────────────
+    def paintEvent(self, _event):
+        p  = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+
+        cx   = W // 2
+        cw   = max(20, min(32, W - 40))   # cylinder width — leave room for tick labels
+        top  = 30                          # top of cylinder body
+        bot  = H - 48                      # bottom of cylinder body
+        ch   = bot - top                   # cylinder height (pixels)
+        x0   = cx - cw // 2
+
+        def y_for(val):
+            """Convert value → pixel y (0 at bottom, max at top)."""
+            frac = max(0.0, min(1.0, val / self._scale)) if self._scale > 0 else 0
+            return int(bot - frac * ch)
+
+        # ── theme-aware colors (dark vs light) ────────────────────────
+        c_bg      = BG      if self._dark else '#FFFFFF'
+        c_outline = BORDER2 if self._dark else '#C7C7CC'
+        c_dim     = TXT_DIM if self._dark else '#9A9AA0'
+        c_sec     = TXT_SEC if self._dark else '#1C1C1E'
+
+        # ── background ────────────────────────────────────────────────
+        p.fillRect(0, 0, W, H, QColor(c_bg))
+
+        # ── green acceptable zone ─────────────────────────────────────
+        if self._high > 0:
+            y_hi = y_for(self._high)
+            y_lo = y_for(self._low)
+            zone = QColor(PH_GREEN); zone.setAlpha(35)
+            p.fillRect(x0, y_hi, cw, y_lo - y_hi, zone)
+
+        # ── actual fill (blue) ────────────────────────────────────────
+        if self._actual is not None:
+            y_act = y_for(self._actual)
+            fill_c = QColor(PH_GREEN) if self._low <= self._actual <= self._high else QColor(PH_RED)
+            fill_c.setAlpha(150)
+            p.fillRect(x0 + 2, y_act, cw - 4, bot - y_act, fill_c)
+
+        # ── cylinder outline ──────────────────────────────────────────
+        pen = p.pen(); pen.setColor(QColor(c_outline)); pen.setWidth(1); p.setPen(pen)
+        p.drawRect(x0, top, cw, ch)
+
+        # ── graduations ───────────────────────────────────────────────
+        steps = 5
+        p.setFont(QFont("Consolas", 7))
+        for i in range(steps + 1):
+            val = self._scale * i / steps
+            yg  = y_for(val)
+            tick_w = 8 if i % 2 == 0 else 4
+            pen.setColor(QColor(c_dim)); pen.setWidth(1); p.setPen(pen)
+            p.drawLine(x0 + cw, yg, x0 + cw + tick_w, yg)
+            if i % 2 == 0 and (x0 + cw + 11 + 28) <= W:
+                pen.setColor(QColor(c_dim)); p.setPen(pen)
+                txt = f"{val:.0f}"
+                p.drawText(x0 + cw + 11, yg + 4, txt)
+
+        # ── target line (amber dashed) ────────────────────────────────
+        if self._target > 0:
+            yt = y_for(self._target)
+            pen.setColor(QColor(PH_AMBER)); pen.setWidth(2)
+            pen.setStyle(Qt.PenStyle.DashLine); p.setPen(pen)
+            p.drawLine(x0 - 4, yt, x0 + cw + 4, yt)
+            pen.setStyle(Qt.PenStyle.SolidLine); p.setPen(pen)
+            p.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
+            p.drawText(x0 - 4, yt - 3, f"►{self._target:.1f}")
+
+        # ── label (bottom) ────────────────────────────────────────────
+        p.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        pen.setColor(QColor(c_sec)); p.setPen(pen)
+        p.drawText(0, bot + 8, W, 14,
+                   Qt.AlignmentFlag.AlignHCenter, self._label)
+        p.setFont(QFont("Consolas", 7))
+        pen.setColor(QColor(c_dim)); p.setPen(pen)
+        p.drawText(0, bot + 22, W, 12,
+                   Qt.AlignmentFlag.AlignHCenter, self._unit)
+
+        # ── actual value readout ──────────────────────────────────────
+        if self._actual is not None:
+            p.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+            c = QColor(PH_GREEN) if self._low <= self._actual <= self._high else QColor(PH_RED)
+            pen.setColor(c); p.setPen(pen)
+            p.drawText(0, bot + 34, W, 14,
+                       Qt.AlignmentFlag.AlignHCenter, f"{self._actual:.2f}")
+        else:
+            p.setFont(QFont("Consolas", 7))
+            pen.setColor(QColor(c_dim)); p.setPen(pen)
+            p.drawText(0, bot + 34, W, 14,
+                       Qt.AlignmentFlag.AlignHCenter, "—.—")
+
+        # ── top cap ───────────────────────────────────────────────────
+        p.setFont(QFont("Consolas", 7))
+        pen.setColor(QColor(c_dim)); p.setPen(pen)
+        p.drawText(0, 6, W, 14,
+                   Qt.AlignmentFlag.AlignHCenter, f"max {self._scale:.0f}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  INJECTOR DATABASE
+# ══════════════════════════════════════════════════════════════════════
+# ── Resolve database path (works both as .py script and PyInstaller .exe) ──
+def _resolve_db_path() -> Path:
+    # Writable folder: %APPDATA%\CAM PRO\
+    app_data = Path(os.environ.get("APPDATA", Path.home())) / "CAM PRO"
+    app_data.mkdir(parents=True, exist_ok=True)
+    writable = app_data / "injector_db.json"
+    if not writable.exists():
+        # First run — seed from bundled copy
+        if getattr(sys, "frozen", False):
+            seed = Path(sys._MEIPASS) / "injector_db.json"
+        else:
+            seed = Path(__file__).parent / "injector_db.json"
+        if seed.exists():
+            import shutil
+            shutil.copy2(seed, writable)
+    return writable
+
+_DB_PATH = _resolve_db_path()
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  COIL NAMES  —  user-editable labels, persisted between sessions
+# ══════════════════════════════════════════════════════════════════════
+COIL_COUNT         = 3
+COIL_PIN_LABELS    = ("GPIO18", "GPIO23", "GPIO4")
+COIL_DEFAULT_NAMES = ("COIL 1", "COIL 2", "COIL 3")
+COIL_NAME_MAXLEN   = 24
+
+def _resolve_coil_cfg_path() -> Path:
+    app_data = Path(os.environ.get("APPDATA", Path.home())) / "CAM PRO"
+    app_data.mkdir(parents=True, exist_ok=True)
+    return app_data / "coil_names.json"
+
+_COIL_CFG_PATH = _resolve_coil_cfg_path()
+
+def load_coil_names() -> list:
+    """Read coil_names.json; fall back to defaults for anything missing/blank."""
+    names = list(COIL_DEFAULT_NAMES)
+    try:
+        with open(_COIL_CFG_PATH, encoding="utf-8") as f:
+            saved = json.load(f).get("names", [])
+        for i in range(min(COIL_COUNT, len(saved))):
+            if isinstance(saved[i], str) and saved[i].strip():
+                names[i] = saved[i].strip()[:COIL_NAME_MAXLEN]
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, AttributeError, TypeError) as e:
+        logging.error(f"coil_names.json parse error: {e} — using defaults.")
+    return names
+
+def save_coil_names(names) -> None:
+    try:
+        with open(_COIL_CFG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"names": list(names)}, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        logging.error(f"coil_names.json save error: {e}")
+
+
+class InjectorDatabase:
+    """Load, query, and save the injector profile database."""
+
+    def __init__(self):
+        self._data = {"version": "1.1", "profiles": []}
+        self._load()
+
+    def _load(self):
+        try:
+            with open(_DB_PATH, encoding="utf-8") as f:
+                self._data = json.load(f)
+        except FileNotFoundError:
+            logging.warning("injector_db.json not found — using empty database.")
+        except json.JSONDecodeError as e:
+            logging.error(f"injector_db.json parse error: {e}")
+
+    def save(self):
+        with open(_DB_PATH, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, indent=2, ensure_ascii=False)
+
+    @property
+    def profiles(self):
+        return self._data.get("profiles", [])
+
+    def brands(self):
+        return sorted(set(p["brand"] for p in self.profiles))
+
+    def by_brand(self, brand):
+        return [p for p in self.profiles if p["brand"] == brand]
+
+    def by_id(self, pid):
+        return next((p for p in self.profiles if p["id"] == pid), None)
+
+    def cambox_profiles(self):
+        """Return the global CamBox mode profiles dict."""
+        return self._data.get("cambox_profiles", {})
+
+    def add_profile(self, profile: dict):
+        self._data["profiles"].append(profile)
+        self.save()
+
+    def delete_profile(self, pid: str):
+        self._data["profiles"] = [p for p in self.profiles if p["id"] != pid]
+        self.save()
+
+    def update_profile(self, pid: str, updated: dict):
+        for i, p in enumerate(self._data["profiles"]):
+            if p["id"] == pid:
+                self._data["profiles"][i] = updated
+                self.save()
+                return
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  SAFETY VALIDATOR
+# ══════════════════════════════════════════════════════════════════════
+class SafetyValidator:
+    """Hard-limit validation before any command reaches the ESP32."""
+
+    # Absolute hardware limits (never exceeded regardless of profile)
+    ABS_MAX_PULSE_US  = 3000
+    ABS_MIN_PULSE_US  = 200
+    ABS_MAX_FREQ_HZ   = 100
+    ABS_MIN_FREQ_HZ   = 1
+    ABS_MAX_DELAY_DEG = 45
+    ABS_MIN_DELAY_DEG = 0
+
+    def __init__(self, profile: dict = None):
+        self._profile = profile  # currently loaded injector profile
+
+    def set_profile(self, profile: dict):
+        self._profile = profile
+
+    def _profile_limits(self):
+        if self._profile and "safety" in self._profile:
+            s = self._profile["safety"]
+            return (
+                s.get("max_pulse_us",  self.ABS_MAX_PULSE_US),
+                s.get("max_freq_hz",   self.ABS_MAX_FREQ_HZ),
+            )
+        return self.ABS_MAX_PULSE_US, self.ABS_MAX_FREQ_HZ
+
+    def validate_pulse(self, us: int) -> tuple[bool, int, str]:
+        max_pw, _ = self._profile_limits()
+        clamped   = max(self.ABS_MIN_PULSE_US, min(int(us), min(max_pw, self.ABS_MAX_PULSE_US)))
+        if clamped != us:
+            return False, clamped, f"Pulse clamped {us}→{clamped} µs (limit {max_pw} µs)"
+        return True, clamped, ""
+
+    def validate_freq(self, hz: int) -> tuple[bool, int, str]:
+        _, max_f  = self._profile_limits()
+        clamped   = max(self.ABS_MIN_FREQ_HZ, min(int(hz), min(max_f, self.ABS_MAX_FREQ_HZ)))
+        if clamped != hz:
+            return False, clamped, f"Freq clamped {hz}→{clamped} Hz (limit {max_f} Hz)"
+        return True, clamped, ""
+
+    def validate_delay(self, deg: int) -> tuple[bool, int, str]:
+        clamped = max(self.ABS_MIN_DELAY_DEG, min(int(deg), self.ABS_MAX_DELAY_DEG))
+        if clamped != deg:
+            return False, clamped, f"Delay clamped {deg}→{clamped}°"
+        return True, clamped, ""
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  SESSION LOGGER
+# ══════════════════════════════════════════════════════════════════════
+_LOG_PATH = Path.home() / "Desktop" / "injector_sessions.csv"
+
+class SessionLogger:
+    """Append-only CSV log of every test session."""
+
+    _HEADER = [
+        "timestamp", "injector_id", "brand", "model",
+        "mode", "pulse_us", "freq_hz", "delay_deg",
+        "duration_s", "total_pulses", "max_pressure_bar", "avg_pkt_s"
+    ]
+
+    def __init__(self):
+        if not _LOG_PATH.exists():
+            with open(_LOG_PATH, "w", newline="", encoding="utf-8") as f:
+                _csv.writer(f).writerow(self._HEADER)
+
+    def log(self, row: dict):
+        try:
+            with open(_LOG_PATH, "a", newline="", encoding="utf-8") as f:
+                w = _csv.writer(f)
+                w.writerow([row.get(k, "") for k in self._HEADER])
+        except Exception as e:
+            logging.warning(f"Session log write failed: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  SERIAL WORKER
+# ══════════════════════════════════════════════════════════════════════
+class SerialWorker(QObject):
+    data_received     = pyqtSignal(str)
+    error_occurred    = pyqtSignal(str)
+    connection_status = pyqtSignal(bool)
+    packet_tick       = pyqtSignal(int)   # packets received in last second
+    _cmd              = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.port          = None
+        self.is_running    = False
+        self._keep_running = True
+        self._last_port    = ''
+        self._last_baud    = 115200
+        self._pkt_buf      = 0          # packet counter (reset each second)
+        self._pkt_tick_t   = time.time()
+        self._cmd.connect(self._write)
+
+    def connect_device(self, port, baud):
+        try:
+            self.port       = serial.Serial(port, baud, timeout=0.1)
+            self.is_running = True
+            self._last_port = port
+            self._last_baud = baud
+            self.connection_status.emit(True)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+            self.connection_status.emit(False)
+
+    def reconnect(self):
+        """Try to reconnect to the last used port."""
+        if self._last_port and not self.is_running:
+            self.connect_device(self._last_port, self._last_baud)
+
+    def disconnect_device(self):
+        self.is_running = False
+        if self.port and self.port.is_open:
+            self.port.close()
+        self.connection_status.emit(False)
+
+    def read_loop(self):
+        while self._keep_running:
+            if self.is_running and self.port and self.port.is_open:
+                try:
+                    latest = None
+                    while self.port.in_waiting > 0:
+                        raw = self.port.readline().decode('utf-8', errors='ignore').strip()
+                        if not raw:
+                            continue
+                        if 'P:' in raw:
+                            latest = raw
+                            self._pkt_buf += 1
+                        else:
+                            self.data_received.emit(raw)
+                    if latest:
+                        self.data_received.emit(latest)
+                    # emit packet rate once per second
+                    now = time.time()
+                    if now - self._pkt_tick_t >= 1.0:
+                        self.packet_tick.emit(self._pkt_buf)
+                        self._pkt_buf    = 0
+                        self._pkt_tick_t = now
+                except Exception as e:
+                    self.error_occurred.emit(f"Lost: {e}")
+                    self.disconnect_device()
+            time.sleep(0.010)
+
+    def send_command(self, cmd):
+        self._cmd.emit(cmd)
+
+    def _write(self, cmd):
+        if self.port and self.port.is_open:
+            try:
+                self.port.write(f"{cmd}\n".encode())
+                logging.info(f"TX: {cmd}")
+            except Exception as e:
+                self.error_occurred.emit(f"Write: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  MAIN WINDOW
+# ══════════════════════════════════════════════════════════════════════
+class DieselDashboard(QMainWindow):
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("INJECTOR PRO  ·  Diesel Injection Test System")
+        self.resize(1400, 860)
+        self.setMinimumWidth(900)   # prevent overflow on smaller screens
+        self.setStyleSheet(STYLE_DARK)
+
+        # ── buffers ───────────────────────────────────────────────────
+        self.pressure_buf = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
+        self.inj_buf      = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
+        self.cam_buf      = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
+
+        # ── state ─────────────────────────────────────────────────────
+        self.total_pulses    = 0
+        self.graph_paused    = False   # stops data buffering (on STOP cmd)
+        self._display_frozen = False   # freezes graph display only (Feature 3)
+        self._graph_dirty    = False
+        self._mode_id        = 0
+        self._dark_mode      = True    # Feature 5 — default: Dark Mode
+
+        # ── Pressure filter state ─────────────────────────────────────
+        self._p_vx4_ema = 0.0   # EMA slow (alpha=0.02) → LCD display
+        self._p_graph   = 0.0   # EMA fast (alpha=0.15) → graph dynamics
+        self._p_ema_raw = 0.0   # latest raw VX4 mV (debug display)
+        self._rpm_ema     = 0.0
+        self._rpm_win     = deque(maxlen=25)   # median window — rejects EMI spikes
+        self._rpm_divisor = RPM_DIVISOR
+        self._inj_ema     = 0.0
+        self._inj_win     = deque(maxlen=20)   # 20 × 10ms = 200ms sliding window
+
+        # ── pulse hold ────────────────────────────────────────────────
+        self._inj_hold    = 0
+        self._cam_hold    = 0
+        self._pressure_ema = 0.0   # EMA accumulator for slew-rate limiter
+
+        # ── LCD snapshot (updated at 30fps) ───────────────────────────
+        self._snap_p = 0.0
+        self._snap_r = 0
+        self._snap_a = 0
+        self._snap_i = 0.0
+        self._snap_d = 0
+
+        # ── Feature 4: alarm state ────────────────────────────────────
+        self._blink_state  = False
+        self._p_alarm      = False
+        self._r_alarm      = False
+        self._alarm_timer  = QTimer()
+        self._alarm_timer.timeout.connect(self._blink_tick)
+        self._alarm_timer.start(420)
+
+        # ── Session tracking ──────────────────────────────────────────
+        self._session_start    = None        # datetime when START pressed
+        self._session_elapsed  = 0           # seconds elapsed this session
+        self._auto_stop_secs   = 0           # 0 = disabled
+        self._session_timer    = QTimer()
+        self._session_timer.timeout.connect(self._session_tick)
+        self._session_timer.start(1000)      # 1 Hz tick
+
+        # ── Watchdog — detect stale / lost connection ─────────────────
+        self._last_data_time   = 0.0         # epoch of last good packet
+        self._watchdog_stale   = False
+        self._watchdog_timer   = QTimer()
+        self._watchdog_timer.timeout.connect(self._watchdog_tick)
+        self._watchdog_timer.start(2000)     # check every 2 s
+
+        # ── Auto-reconnect ────────────────────────────────────────────
+        self._auto_reconnect   = False
+        self._reconnect_timer  = QTimer()
+        self._reconnect_timer.timeout.connect(self._try_reconnect)
+        self._reconnect_timer.start(4000)    # attempt every 4 s
+
+        # ── Packet rate ───────────────────────────────────────────────
+        self._pkt_rate         = 0           # packets/s from worker
+
+        # ── Injector profile system ───────────────────────────────────
+        self._injector_db      = InjectorDatabase()
+        self._safety           = SafetyValidator()
+        self._session_logger   = SessionLogger()
+        self._active_profile   = None        # currently loaded profile dict
+        self._active_mode      = "Full Load" # last selected test mode
+        self._max_pressure     = 0.0         # peak pressure this session
+        # ── Session time-series statistics ───────────────────────────
+        self._min_pressure     = None        # lowest pressure seen (BAR)
+        self._sum_pressure     = 0.0         # running sum → average
+        self._cnt_pressure     = 0           # sample count
+        self._sum_rpm          = 0.0
+        self._cnt_rpm          = 0
+        self._max_rpm          = 0           # peak RPM this session
+
+        # ── serial ────────────────────────────────────────────────────
+        self.thread = QThread()
+        self.worker = SerialWorker()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.read_loop)
+        self.worker.data_received.connect(self._on_data)
+        self.worker.error_occurred.connect(lambda m: logging.error(m))
+        self.worker.connection_status.connect(self._on_conn)
+        self.worker.connection_status.connect(
+            lambda ok: QTimer.singleShot(700, self._sync) if ok else None)
+        self.worker.packet_tick.connect(self._on_pkt_tick)
+        self.thread.start()
+
+        self._build_ui()
+        self._apply_theme_widgets()          # sync all inline styles with startup mode
+        QApplication.processEvents()         # force Qt to repaint with new styles
+
+        self._port_timer = QTimer()
+        self._port_timer.timeout.connect(self._refresh_ports)
+        self._port_timer.start(2000)
+        self._refresh_ports()
+
+        self._graph_timer = QTimer()
+        self._graph_timer.timeout.connect(self._tick)
+        self._graph_timer.start(1000 // GRAPH_FPS)
+
+        self._setup_shortcuts()
+
+    # ──────────────────────────────────────────────────────────────────
+    #  KEYBOARD SHORTCUTS  (test-bench ergonomics + emergency stop)
+    # ──────────────────────────────────────────────────────────────────
+    def _setup_shortcuts(self):
+        from PyQt6.QtGui import QShortcut, QKeySequence
+
+        def sc(key, slot):
+            s = QShortcut(QKeySequence(key), self)
+            s.activated.connect(slot)
+            return s
+
+        sc("F5",      self._on_start)    # START
+        sc("F6",      self._on_stop)     # STOP
+        sc("Esc",     self._on_stop)     # emergency STOP
+        sc("Ctrl+S",  self._save_pdf)    # save PDF report
+        sc("Ctrl+E",  self._export_csv)  # export CSV
+        sc("Ctrl+R",  self._sync)        # re-sync params
+        sc("Ctrl+L",  self._toggle_theme)  # toggle Light/Dark
+
+        # Surface the shortcuts in tooltips
+        self.start_btn.setToolTip("Start injection  ·  F5")
+        self.stop_btn.setToolTip("Stop injection  ·  F6 / Esc")
+        self.report_btn.setToolTip("Save PDF report  ·  Ctrl+S")
+        self.csv_btn.setToolTip("Export CSV  ·  Ctrl+E")
+        self.theme_btn.setToolTip("Toggle Light / Dark  ·  Ctrl+L")
+
+    # ──────────────────────────────────────────────────────────────────
+    #  UI BUILD
+    # ──────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        root = QWidget(); self.setCentralWidget(root)
+        main = QVBoxLayout(root)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+
+        main.addWidget(self._make_header())
+
+        body = QHBoxLayout()
+        body.setContentsMargins(12, 10, 12, 12)
+        body.setSpacing(12)
+
+        body.addWidget(self._make_left(),  stretch=0)
+        body.addWidget(self._make_right(), stretch=1)
+
+        main.addLayout(body)
+
+    # ──────────────────────────────────────────────────────────────────
+    #  HEADER BAR
+    # ──────────────────────────────────────────────────────────────────
+    def _make_header(self):
+        bar = QWidget()
+        bar.setFixedHeight(44)
+        bar.setStyleSheet(
+            f"background:{HEADER}; border-bottom:1px solid {BORDER2};")
+        self._header_bar = bar
+
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(16, 0, 16, 0)
+
+        logo = QLabel("  INJECTOR PRO")
+        logo.setStyleSheet(
+            f"color:{PH_GREEN}; font-size:15px; font-weight:bold;"
+            f" font-family:monospace; letter-spacing:2px;")
+
+        self.hdr_mode = QLabel("  COMMON RAIL")
+        self.hdr_mode.setStyleSheet(
+            f"color:{PH_BLUE}; font-size:11px; font-family:monospace; letter-spacing:1px;")
+
+        self.hdr_conn = QLabel("●  DISCONNECTED")
+        self.hdr_conn.setStyleSheet(
+            f"color:{PH_RED}; font-size:11px; font-family:monospace; letter-spacing:1px;")
+
+        self.hdr_pulses = QLabel("PULSES: 0")
+        self.hdr_pulses.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:11px; font-family:monospace;")
+
+        # ── Packet rate ───────────────────────────────────────────────
+        self.hdr_pkt = QLabel("PKT: — /s")
+        self.hdr_pkt.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:11px; font-family:monospace;")
+
+        # ── Session elapsed timer ─────────────────────────────────────
+        self.hdr_timer = QLabel("⏱  00:00:00")
+        self.hdr_timer.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:11px; font-family:monospace;")
+
+        # Feature 5 — Theme toggle button
+        self.theme_btn = QPushButton("LIGHT MODE")
+        self.theme_btn.setFixedHeight(28)
+        self.theme_btn.setStyleSheet(f"""
+            QPushButton       {{background:{BORDER};color:{TXT_SEC};
+                                border:1px solid {BORDER2};border-radius:6px;
+                                font-size:10px;padding:0 10px;font-weight:500;}}
+            QPushButton:hover {{background:{BORDER2};color:{TXT_PRI};border-color:{PH_BLUE};}}
+            QPushButton:pressed {{background:{BG};color:{TXT_PRI};}}
+        """)
+        self.theme_btn.clicked.connect(self._toggle_theme)
+
+        h.addWidget(logo)
+        h.addSpacing(30)
+        h.addWidget(self.hdr_mode)
+        h.addStretch()
+        h.addWidget(self.hdr_timer)
+        h.addSpacing(20)
+        h.addWidget(self._vsep())
+        h.addSpacing(20)
+        h.addWidget(self.hdr_pkt)
+        h.addSpacing(20)
+        h.addWidget(self._vsep())
+        h.addSpacing(20)
+        h.addWidget(self.hdr_pulses)
+        h.addSpacing(20)
+        h.addWidget(self._vsep())
+        h.addSpacing(10)
+        h.addWidget(self.theme_btn)
+        h.addSpacing(10)
+        h.addWidget(self._vsep())
+        h.addSpacing(20)
+        h.addWidget(self.hdr_conn)
+        return bar
+
+    # ──────────────────────────────────────────────────────────────────
+    #  LEFT CONTROL PANEL
+    # ──────────────────────────────────────────────────────────────────
+    def _make_left(self):
+        # inner widget holds all panels
+        inner = QWidget()
+        v = QVBoxLayout(inner); v.setSpacing(10); v.setContentsMargins(0, 0, 4, 0)
+        v.addWidget(self._panel_conn())
+        v.addWidget(self._panel_presets())
+        v.addWidget(self._panel_mode())
+        v.addWidget(self._panel_params())
+        v.addWidget(self._panel_coils())
+        v.addWidget(self._panel_relay())
+        v.addWidget(self._panel_shot())
+        v.addWidget(self._panel_actions())
+        v.addStretch()
+
+        # wrap in a scroll area so nothing ever hides under the taskbar
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(286)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        return scroll
+
+    # ──────────────────────────────────────────────────────────────────
+    #  RIGHT DISPLAY PANEL
+    # ──────────────────────────────────────────────────────────────────
+    def _make_right(self):
+        inner = QWidget()
+        v = QVBoxLayout(inner); v.setSpacing(8); v.setContentsMargins(0, 0, 0, 0)
+
+        # Row 1: Live measurement meters (BAR / RPM / INJ)
+        v.addWidget(self._panel_meters())
+
+        # Row 2: Waveform graphs — full width, very compact
+        v.addWidget(self._panel_mini_graphs())
+
+        # Row 3: Main body — calibration table | cylinders
+        body = QHBoxLayout(); body.setSpacing(8)
+        body.addWidget(self._panel_cylinders())
+        body.addWidget(self._panel_calib_table(), stretch=1)
+        v.addLayout(body, stretch=4)
+
+        return inner
+
+    # ── Calibration table styling (theme-aware) ───────────────────────
+    def _calib_table_style(self, dark: bool) -> str:
+        if dark:
+            bg, txt, grid   = PANEL, TXT_PRI, BG
+            hdr_bg, hdr_txt = HEADER, TXT_DIM
+            hdr_line        = BORDER2
+        else:
+            bg, txt, grid   = '#FFFFFF', '#1C1C1E', '#E0E0E6'
+            hdr_bg, hdr_txt = '#EBEBF0', '#3A3A4A'
+            hdr_line        = '#C7C7CC'
+        return f"""
+            QTableWidget {{
+                background:{bg}; color:{txt}; border:none;
+                font-family:Consolas,monospace; font-size:14px;
+                gridline-color:{grid};
+            }}
+            QTableWidget::item {{ padding: 8px 3px; border: none; }}
+            QTableWidget::item:selected {{ background:{PH_BLUE}22; color:{txt}; }}
+            QHeaderView::section {{
+                background:{hdr_bg}; color:{hdr_txt}; border:none;
+                font-size:10px; font-weight:bold; letter-spacing:1px;
+                padding:6px; border-bottom:1px solid {hdr_line};
+            }}
+        """
+
+    # ── Calibration table ─────────────────────────────────────────────
+    def _panel_calib_table(self):
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView
+        box = QGroupBox("CALIBRATION TABLE  —  DELIVERY SPEC  (ml / 1000 pulses)")
+        box.setMinimumWidth(0)          # allow shrinking to fit any screen
+        v   = QVBoxLayout(box); v.setContentsMargins(6, 6, 6, 6)
+
+        cols = ["Test Mode", "RPM", "PW (µs)", "Time (s)",
+                "Target (ml)", "Min", "Max", "Unit", "Actual", "Status"]
+        self._calib_table = QTableWidget(0, len(cols))
+        self._calib_table.setMinimumWidth(0)     # allow layout to shrink table
+        self._calib_table.setHorizontalHeaderLabels(cols)
+        self._calib_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self._calib_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Fixed)
+        self._calib_table.setColumnWidth(0, 148)
+        self._calib_table.verticalHeader().setVisible(False)
+        self._calib_table.verticalHeader().setDefaultSectionSize(72)
+        self._calib_table.setWordWrap(False)
+        self._calib_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked |
+            QTableWidget.EditTrigger.SelectedClicked)
+        self._calib_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        self._calib_table.setStyleSheet(self._calib_table_style(self._dark_mode))
+        # Connect cell changed so technician can enter actual values
+        self._calib_table.cellChanged.connect(self._on_calib_actual_changed)
+        # Right-click to edit spec values (PIN protected)
+        self._calib_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._calib_table.customContextMenuRequested.connect(self._table_context_menu)
+        self._dev_unlocked = False   # session-level unlock cache
+        v.addWidget(self._calib_table)
+
+        # Populate with default empty rows
+        self._populate_calib_table(None)
+        return box
+
+    def _populate_calib_table(self, profile: dict | None):
+        from PyQt6.QtWidgets import QTableWidgetItem
+        t = self._calib_table
+        t.blockSignals(True)
+        t.setRowCount(0)
+
+        mode_names = ["Idle", "Medium", "Full Load", "Leak Test", "CamBox"]
+        modes = profile.get("modes", {}) if profile else {}
+
+        display_names = {
+            "Idle":      "Idle",
+            "Medium":    "Medium",
+            "Full Load": "Full Load",
+            "Leak Test": "Leak Test",
+            "CamBox":    "VE",
+        }
+
+        if self._dark_mode:
+            row_colors = {
+                "Idle":      "#0A1820",
+                "Medium":    "#0A1808",
+                "Full Load": "#1A0808",
+                "Leak Test": "#1A1208",
+                "CamBox":    "#100A20",
+            }
+            default_bg  = PANEL
+            default_txt = TXT_PRI
+        else:
+            row_colors = {
+                "Idle":      "#EAF4FA",
+                "Medium":    "#EDF7E8",
+                "Full Load": "#FBECEC",
+                "Leak Test": "#FBF4E6",
+                "CamBox":    "#F1EBFA",
+            }
+            default_bg  = "#FFFFFF"
+            default_txt = "#1C1C1E"
+
+        for mname in mode_names:
+            mp = modes.get(mname, {})
+            dname = display_names.get(mname, mname)
+            row_idx = t.rowCount()
+            t.insertRow(row_idx)
+
+            def cell(txt, editable=False, color=None):
+                item = QTableWidgetItem(str(txt))
+                if not editable:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setForeground(QColor(color if color else default_txt))
+                bg = QColor(row_colors.get(mname, default_bg))
+                item.setBackground(bg)
+                return item
+
+            rpm  = mp.get("rpm", "—")
+            pw   = mp.get("pulse_us", "—")
+            dur  = mp.get("duration_s", "—")
+            tgt  = mp.get("vol_target", "—")
+            lo   = mp.get("vol_min", "—")
+            hi   = mp.get("vol_max", "—")
+            unit = mp.get("vol_unit", "ml/1000")
+            is_leak = mname == "Leak Test"
+
+            name_item = cell(dname, color=PH_CYAN)
+            name_item.setFont(QFont("Consolas", 18, QFont.Weight.Bold))
+            t.setItem(row_idx, 0, name_item)
+            t.setItem(row_idx, 1, cell(str(rpm) if rpm != "—" else "—", color=PH_PURPLE))
+            t.setItem(row_idx, 2, cell("0" if is_leak else str(pw), color=PH_AMBER))
+            t.setItem(row_idx, 3, cell(str(dur) if dur != "—" else "—", color=TXT_SEC))
+            t.setItem(row_idx, 4, cell(f"{tgt}" if tgt != "—" else "—", color=PH_GREEN))
+            t.setItem(row_idx, 5, cell(f"{lo}"  if lo  != "—" else "—"))
+            t.setItem(row_idx, 6, cell(f"{hi}"  if hi  != "—" else "—"))
+            unit_disp = "≤ml/m" if is_leak else "ml/1k"
+            t.setItem(row_idx, 7, cell(unit_disp))
+            t.setItem(row_idx, 8, cell("", editable=True))   # Actual — editable
+            t.setItem(row_idx, 9, cell("—"))                  # Status
+
+        t.blockSignals(False)
+
+    def _on_calib_actual_changed(self, row, col):
+        """When technician enters actual measurement, update status + cylinders."""
+        if col != 8:   # only the Actual column
+            return
+        t   = self._calib_table
+        try:
+            actual = float(t.item(row, 8).text().replace(",", "."))
+        except (ValueError, AttributeError):
+            t.item(row, 9).setText("—")
+            return
+        try:
+            lo  = float(t.item(row, 5).text())
+            hi  = float(t.item(row, 6).text())
+            is_leak = t.item(row, 0).text() == "Leak Test"
+            if is_leak:
+                ok = actual <= hi
+            else:
+                ok = lo <= actual <= hi
+            status = "✓  PASS" if ok else "✗  FAIL"
+            color  = PH_GREEN  if ok else PH_RED
+            status_item = t.item(row, 9)
+            status_item.setText(status)
+            status_item.setForeground(QColor(color))
+            # Update the corresponding cylinder gauge
+            mode_name = t.item(row, 0).text()
+            cyl_key = "CamBox" if mode_name == "VE" else mode_name
+            if hasattr(self, '_cylinders') and cyl_key in self._cylinders:
+                self._cylinders[cyl_key].set_actual(actual)
+        except (ValueError, AttributeError):
+            pass
+
+    # ── Cylinder gauges panel ─────────────────────────────────────────
+    def _panel_cylinders(self):
+        box = QGroupBox("Q INJECT  —  ml")
+        h   = QHBoxLayout(box); h.setSpacing(4); h.setContentsMargins(4, 4, 4, 4)
+
+        self._cylinders = {}
+        mode_colors = {
+            "Idle":      PH_CYAN,
+            "Medium":    PH_GREEN,
+            "Full Load": PH_AMBER,
+            "Leak Test": PH_RED,
+            "CamBox":    PH_PURPLE,
+        }
+        gauge_labels = {
+            "Idle":      "Idle",
+            "Medium":    "Medium",
+            "Full Load": "Full Load",
+            "Leak Test": "Leak Test",
+            "CamBox":    "VE",
+        }
+        for mname, color in mode_colors.items():
+            cg = CylinderGauge(
+                label=gauge_labels.get(mname, mname), unit="ml",
+                target=0.0, low=0.0, high=5.0, scale_max=25.0
+            )
+            self._cylinders[mname] = cg
+            h.addWidget(cg, stretch=1)
+        box.setMinimumWidth(300)   # was setFixedWidth(500) — allow flexible width
+        return box
+
+    def _refresh_cylinders(self, profile: dict | None):
+        """Update cylinder gauges from the loaded profile."""
+        if not hasattr(self, '_cylinders'):
+            return
+        modes = profile.get("modes", {}) if profile else {}
+        for mname, cg in self._cylinders.items():
+            mp = modes.get(mname, {})
+            tgt = mp.get("vol_target", 0.0)
+            lo  = mp.get("vol_min",    0.0)
+            hi  = mp.get("vol_max",    5.0)
+            scale = max(hi * 1.3, tgt * 1.6, 5.0)
+            cg.set_spec(tgt, lo, hi, scale)
+
+    # ── Mini oscilloscope (3 small graphs) ───────────────────────────
+    def _panel_mini_graphs(self):
+        box = QGroupBox("WAVEFORM")
+        v   = QHBoxLayout(box); v.setContentsMargins(4, 4, 4, 4); v.setSpacing(4)
+
+        def mini(color, label):
+            glw = pg.GraphicsLayoutWidget()
+            glw.setBackground(G_BG)
+            glw.setStyleSheet(
+                f"border:1px solid {color}30; border-radius:4px;")
+            p = glw.addPlot()
+            p.hideAxis('bottom')
+            p.getAxis('left').setTextPen(pg.mkPen(color=TXT_DIM))
+            p.getAxis('left').setWidth(32)
+            p.getAxis('left').setPen(pg.mkPen(color=BORDER))
+            p.setLabel('left', label, color=color,
+                       **{'font-size': '7pt'})
+            p.setMenuEnabled(False)
+            p.setMouseEnabled(False, False)
+            curve = p.plot(pen=pg.mkPen(color=color, width=1))
+            glw.setFixedHeight(50)
+            return glw, curve
+
+        self.glw_p, self.curve_p = mini(G_AMBER, "BAR")
+        self.glw_i, self.curve_i = mini(G_GREEN, "INJ")
+        self.glw_c, self.curve_c = mini(G_BLUE,  "CAM")
+
+        # Override pyqtgraph's large default sizeHint — allow equal stretch
+        for glw in (self.glw_p, self.glw_i, self.glw_c):
+            glw.setMinimumWidth(50)
+
+        v.addWidget(self.glw_p, stretch=1)
+        v.addWidget(self.glw_i, stretch=1)
+        v.addWidget(self.glw_c, stretch=1)
+
+        # Freeze button
+        from PyQt6.QtWidgets import QHBoxLayout as QHL
+        row = QWidget(); rh = QHL(row); rh.setContentsMargins(0,0,0,0)
+        self.freeze_btn = QPushButton("FREEZE")
+        self.freeze_btn.setCheckable(True)
+        self.freeze_btn.setFixedHeight(22)
+        self.freeze_btn.setStyleSheet(f"""
+            QPushButton         {{background:{BORDER};color:{PH_BLUE};
+                                  border:1px solid {BORDER2};border-radius:4px;
+                                  font-size:9px;padding:0 8px;}}
+            QPushButton:checked {{background:#241E08;color:{PH_AMBER};
+                                  border-color:{PH_AMBER};}}
+        """)
+        self.freeze_btn.toggled.connect(self._toggle_freeze)
+        self._freeze_status = QLabel("LIVE")
+        self._freeze_status.setStyleSheet(
+            f"color:{PH_GREEN}; font-size:9px; font-family:monospace;")
+        rh.addWidget(self.freeze_btn)
+        rh.addWidget(self._freeze_status)
+        rh.addStretch()
+        v.addWidget(row)
+        return box
+
+    # Keep old _panel_scope as alias so PDF report and other references don't break
+    def _panel_scope(self):
+        return self._panel_mini_graphs()
+
+    # ── Communication log widget ───────────────────────────────────────
+    def _comm_log(self, msg: str, color: str = None):
+        pass
+
+    # ── connection ────────────────────────────────────────────────────
+    def _panel_conn(self):
+        box = QGroupBox("CONNECTION")
+        g   = QGridLayout(box); g.setSpacing(8)
+
+        g.addWidget(self._dim("PORT"), 0, 0)
+        self.port_combo = QComboBox()
+        g.addWidget(self.port_combo, 0, 1)
+
+        g.addWidget(self._dim("BAUD"), 1, 0)
+        self.baud_combo = QComboBox()
+        self.baud_combo.addItems(["115200", "57600", "9600"])
+        g.addWidget(self.baud_combo, 1, 1)
+
+        self.conn_btn = QPushButton("CONNECT")
+        self._style_conn_btn(connected=False)
+        self.conn_btn.clicked.connect(self._toggle_conn)
+        g.addWidget(self.conn_btn, 2, 0, 1, 2)
+
+        self.conn_lbl = QLabel("●  DISCONNECTED")
+        self.conn_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.conn_lbl.setStyleSheet(
+            f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
+        g.addWidget(self.conn_lbl, 3, 0, 1, 2)
+
+        # ── Auto-reconnect checkbox ───────────────────────────────────
+        self.autoreconn_cb = QCheckBox("Auto-Reconnect")
+        self.autoreconn_cb.setStyleSheet(
+            f"color:{TXT_SEC}; font-size:10px;")
+        self.autoreconn_cb.toggled.connect(
+            lambda v: setattr(self, '_auto_reconnect', v))
+        g.addWidget(self.autoreconn_cb, 4, 0, 1, 2)
+
+        # ── Injector ID field ─────────────────────────────────────────
+        g.addWidget(self._dim("INJECTOR ID"), 5, 0)
+        self.inj_id_edit = QLineEdit()
+        self.inj_id_edit.setPlaceholderText("e.g. 0445110xxx")
+        self.inj_id_edit.setMaxLength(30)
+        self.inj_id_edit.setStyleSheet(
+            f"background:{BORDER}; border:1px solid {BORDER2}; border-radius:5px;"
+            f" padding:4px 8px; color:{TXT_PRI}; font-family:monospace; font-size:11px;")
+        g.addWidget(self.inj_id_edit, 5, 1)
+        return box
+
+    # ── Injector Profile System ────────────────────────────────────────
+    def _panel_presets(self):
+        box = QGroupBox("INJECTOR PROFILE")
+        g   = QGridLayout(box); g.setSpacing(6)
+
+        # ── Search bar + ADD button ───────────────────────────────────
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("🔍  Search brand / model...")
+        self._search_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background:{BORDER}; color:{TXT_PRI};
+                border:1px solid {BORDER2}; border-radius:6px;
+                padding:4px 8px; font-size:11px;
+            }}
+            QLineEdit:focus {{ border-color:{PH_BLUE}; }}
+        """)
+        self._search_edit.textChanged.connect(self._on_search_changed)
+
+        self._add_btn = QPushButton("+ ADD")
+        self._add_btn.setFixedWidth(60)
+        self._add_btn.setStyleSheet(f"""
+            QPushButton       {{background:#081428;color:{PH_BLUE};
+                                border:1px solid #102248;border-radius:6px;
+                                font-size:11px;font-weight:600;padding:4px;}}
+            QPushButton:hover {{background:#102248;color:{TXT_PRI};border-color:{PH_BLUE};}}
+            QPushButton:pressed {{background:#050C18;}}
+        """)
+        self._add_btn.clicked.connect(self._on_add_profile)
+
+        search_row = QHBoxLayout(); search_row.setSpacing(4)
+        search_row.addWidget(self._search_edit)
+        search_row.addWidget(self._add_btn)
+        g.addLayout(search_row, 0, 0, 1, 2)
+
+        # Brand selector
+        g.addWidget(self._dim("BRAND"), 1, 0)
+        self.brand_combo = QComboBox()
+        self.brand_combo.addItem("— Select Brand —")
+        self.brand_combo.addItems(self._injector_db.brands())
+        self.brand_combo.currentTextChanged.connect(self._on_brand_change)
+        g.addWidget(self.brand_combo, 1, 1)
+
+        # Model selector
+        g.addWidget(self._dim("MODEL"), 2, 0)
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("— Select Model —")
+        self.model_combo.currentTextChanged.connect(self._on_model_change)
+        self.model_combo.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.model_combo.customContextMenuRequested.connect(self._model_context_menu)
+        g.addWidget(self.model_combo, 2, 1)
+
+        # Test mode selector
+        g.addWidget(self._dim("TEST MODE"), 3, 0)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Full Load", "Idle", "Medium", "Leak Test", "VE"])
+        self.mode_combo.currentTextChanged.connect(self._on_mode_combo_change)
+        g.addWidget(self.mode_combo, 3, 1)
+
+        # CamBox sub-mode selector (visible only when CamBox selected)
+        g.addWidget(self._dim("CAM PROFILE"), 4, 0)
+        self.cambox_combo = QComboBox()
+        cb_names = list(self._injector_db.cambox_profiles().keys())
+        self.cambox_combo.addItems(cb_names if cb_names else ["Idle"])
+        self.cambox_combo.currentTextChanged.connect(self._on_cambox_profile_change)
+        g.addWidget(self.cambox_combo, 4, 1)
+        self._cambox_row_lbl = g.itemAtPosition(4, 0).widget()
+        self.cambox_combo.setVisible(False)
+        self._cambox_row_lbl.setVisible(False)
+
+        # Target RPM label (reference only — not sent to ESP32)
+        self._rpm_target_lbl = QLabel("Target RPM: —")
+        self._rpm_target_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._rpm_target_lbl.setStyleSheet(
+            f"color:{PH_PURPLE}; font-size:10px; font-family:monospace; padding:1px 0;")
+        g.addWidget(self._rpm_target_lbl, 5, 0, 1, 2)
+
+        # Profile info card
+        self._profile_info = QLabel("No profile loaded")
+        self._profile_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._profile_info.setWordWrap(True)
+        self._profile_info.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:9px; font-family:monospace;"
+            f" padding:4px; border:1px solid {BORDER}; border-radius:4px;")
+        g.addWidget(self._profile_info, 6, 0, 1, 2)
+
+        # Safety limits badge
+        self._safety_lbl = QLabel("")
+        self._safety_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._safety_lbl.setStyleSheet(
+            f"color:{PH_AMBER}; font-size:9px; font-family:monospace; padding:2px 0;")
+        g.addWidget(self._safety_lbl, 7, 0, 1, 2)
+
+        # Keep backward-compat alias for _apply_preset (called from _save_pdf etc.)
+        self.preset_combo = self.model_combo
+
+        return box
+
+    # ── mode ──────────────────────────────────────────────────────────
+    def _panel_mode(self):
+        box = QGroupBox("INJECTION MODE")
+        h   = QHBoxLayout(box); h.setSpacing(0)
+
+        self.mode_grp  = QButtonGroup(self)
+        self.rb_custom = QRadioButton("Common Rail")
+        self.rb_cam    = QRadioButton("CamBox  (Sync)")
+        self.rb_custom.setChecked(True)
+        self.mode_grp.addButton(self.rb_custom, 0)
+        self.mode_grp.addButton(self.rb_cam,    1)
+        self.mode_grp.idToggled.connect(
+            lambda id, chk: self._on_mode(id) if chk else None)
+
+        h.addWidget(self.rb_custom)
+        h.addWidget(self.rb_cam)
+        return box
+
+    # ── parameters ────────────────────────────────────────────────────
+    def _panel_params(self):
+        box = QGroupBox("PARAMETERS")
+        g   = QGridLayout(box); g.setSpacing(6)
+
+        def row(lbl_txt, lo, hi, val, step=1):
+            lbl = self._dim(lbl_txt)
+            sp  = QSpinBox(); sp.setRange(lo, hi); sp.setValue(val); sp.setSingleStep(step)
+            sl  = QSlider(Qt.Orientation.Horizontal); sl.setRange(lo, hi); sl.setValue(val)
+            sp.valueChanged.connect(sl.setValue)
+            sl.valueChanged.connect(sp.setValue)
+            return lbl, sp, sl
+
+        self.pw_lbl, self.pw_sp, self.pw_sl = row("PULSE WIDTH (µs)", 200, 3000, 1000, 50)
+        self.fr_lbl, self.fr_sp, self.fr_sl = row("FREQUENCY (Hz)",     1,  100,   25)
+        self.an_lbl, self.an_sp, self.an_sl = row("DELAY ANGLE (°)",    0,   45,    0)
+
+        self.pw_sp.valueChanged.connect(lambda v: self._send_validated(f"w{v}"))
+        self.fr_sp.valueChanged.connect(lambda v: self._send_validated(f"f{v}"))
+        # Delay angle: send only on slider release to avoid flooding serial
+        self.an_sl.sliderReleased.connect(
+            lambda: self._send_validated(f"a{self.an_sp.value()}"))
+        self.an_sp.editingFinished.connect(
+            lambda: self._send_validated(f"a{self.an_sp.value()}"))
+
+        for i, (lbl, sp, sl) in enumerate([
+            (self.pw_lbl, self.pw_sp, self.pw_sl),
+            (self.fr_lbl, self.fr_sp, self.fr_sl),
+            (self.an_lbl, self.an_sp, self.an_sl),
+        ]):
+            g.addWidget(lbl, i * 2,     0, 1, 2)
+            g.addWidget(sp,  i * 2,     2)
+            g.addWidget(sl,  i * 2 + 1, 0, 1, 3)
+
+        self.delay_lbl = QLabel("DELAY  —  ms")
+        self.delay_lbl.setStyleSheet(
+            f"color:{PH_PURPLE}; font-size:11px; font-family:monospace; padding:2px 0;")
+        g.addWidget(self.delay_lbl, 6, 0, 1, 3)
+
+        # ── RPM Divisor calibration ───────────────────────────────────
+        rpm_div_lbl = self._dim("RPM DIVISOR")
+        self.rpm_div_sp = QDoubleSpinBox()
+        self.rpm_div_sp.setRange(0.1, 10.0)
+        self.rpm_div_sp.setSingleStep(0.01)
+        self.rpm_div_sp.setDecimals(2)
+        self.rpm_div_sp.setValue(RPM_DIVISOR)
+        self.rpm_div_sp.valueChanged.connect(self._on_rpm_divisor)
+        g.addWidget(rpm_div_lbl,      7, 0, 1, 2)
+        g.addWidget(self.rpm_div_sp,  7, 2)
+
+        self._cam_visible(False)
+        return box
+
+    # ══════════════════════════════════════════════════════════════════
+    #  COILS  —  three independently named / switched Peak & Hold channels
+    #
+    #  Each box: editable name (persisted to coil_names.json) + status dot
+    #  + ON/OFF toggle (→ "COIL n ON|OFF") + FIRE momentary (→ "FIRE n").
+    #  The firmware owns the truth: its COILS:<c1>,<c2>,<c3> report re-syncs
+    #  the toggles, so the UI cannot drift out of step with the board.
+    # ══════════════════════════════════════════════════════════════════
+    def _panel_coils(self):
+        box = QGroupBox("COILS")
+        v   = QVBoxLayout(box); v.setSpacing(6)
+
+        self._coil_names   = load_coil_names()
+        self._coil_on      = [False] * COIL_COUNT
+        self._coil_frames  = []
+        self._coil_edits   = []
+        self._coil_dots    = []
+        self._coil_pins    = []
+        self._coil_toggles = []
+        self._coil_fires   = []
+
+        for i in range(COIL_COUNT):
+            v.addWidget(self._make_coil_row(i))
+
+        hint = self._dim("TOGGLE = ENABLE CHANNEL   ·   FIRE = ONE PULSE")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        return box
+
+    def _make_coil_row(self, i: int):
+        frame = QWidget()
+        fv = QVBoxLayout(frame); fv.setContentsMargins(8, 7, 8, 7); fv.setSpacing(6)
+
+        # ── row 1: status dot + editable name + pin label ──────────────
+        top = QHBoxLayout(); top.setSpacing(6)
+
+        dot = QLabel("●")
+        dot.setFixedWidth(12)
+        self._coil_dots.append(dot)
+        top.addWidget(dot)
+
+        edit = QLineEdit(self._coil_names[i])
+        edit.setMaxLength(COIL_NAME_MAXLEN)
+        edit.setPlaceholderText(COIL_DEFAULT_NAMES[i])
+        edit.setToolTip("Click to rename this coil — saved between sessions")
+        edit.editingFinished.connect(lambda idx=i: self._on_coil_rename(idx))
+        self._coil_edits.append(edit)
+        top.addWidget(edit, stretch=1)
+
+        # Own stylesheet (not _dim) — the frame's border would otherwise
+        # cascade onto the label and draw a box around the pin name.
+        pin = QLabel(COIL_PIN_LABELS[i])
+        self._coil_pins.append(pin)
+        top.addWidget(pin)
+        fv.addLayout(top)
+
+        # ── row 2: ON/OFF toggle + FIRE ────────────────────────────────
+        bot = QHBoxLayout(); bot.setSpacing(6)
+
+        tog = QPushButton("OFF")
+        tog.setCheckable(True)
+        tog.setMinimumHeight(28)
+        tog.setToolTip(f"Enable / disable coil {i+1} (COIL {i+1} ON|OFF)")
+        tog.toggled.connect(lambda on, idx=i: self._on_coil_toggle(idx, on))
+        self._coil_toggles.append(tog)
+        bot.addWidget(tog, stretch=2)
+
+        fire = QPushButton("FIRE")
+        fire.setMinimumHeight(28)
+        fire.setToolTip(f"Single Peak & Hold shot on coil {i+1} (FIRE {i+1})")
+        fire.clicked.connect(lambda _=False, idx=i: self._on_coil_fire(idx))
+        self._coil_fires.append(fire)
+        bot.addWidget(fire, stretch=1)
+        fv.addLayout(bot)
+
+        self._coil_frames.append(frame)
+        self._style_coil_row(i)
+        return frame
+
+    # ── per-row styling (also the theme-toggle repaint path) ───────────
+    def _style_coil_row(self, i: int):
+        dk  = self._dark_mode
+        on  = self._coil_on[i]
+
+        frame_bg  = PANEL   if dk else '#FFFFFF'
+        frame_bdr = BORDER2 if dk else '#E0E0E6'
+        # An enabled coil gets a green edge so it reads at a glance.
+        if on:
+            frame_bdr = PH_GREEN if not dk else '#1E5233'
+        self._coil_frames[i].setStyleSheet(
+            f"background:{frame_bg}; border:1px solid {frame_bdr}; border-radius:6px;")
+
+        self._coil_edits[i].setStyleSheet(
+            f"QLineEdit {{ background:{BORDER if dk else '#F2F2F6'};"
+            f" color:{TXT_PRI if dk else '#1A1A1E'};"
+            f" border:1px solid {BORDER2 if dk else '#D8D8DE'}; border-radius:5px;"
+            f" padding:3px 7px; font-family:monospace; font-size:11px;"
+            f" font-weight:600; letter-spacing:1px; }}"
+            f"QLineEdit:focus {{ border-color:{PH_BLUE}; }}")
+
+        dot_c = PH_GREEN if on else (TXT_DIM if dk else '#C6C6CC')
+        self._coil_dots[i].setStyleSheet(
+            f"color:{dot_c}; font-size:13px; border:none; background:transparent;")
+
+        self._coil_pins[i].setStyleSheet(
+            f"color:{TXT_DIM if dk else '#9A9AA2'}; font-size:9px; font-weight:bold;"
+            f" font-family:monospace; border:none; background:transparent;")
+
+        tog = self._coil_toggles[i]
+        if on:
+            on_bg    = '#0A2218' if dk else '#DFF5E6'
+            on_txt   = PH_GREEN  if dk else '#0E6B2E'
+            on_hover = '#163C28' if dk else '#CDEDD8'
+            on_press = '#061009' if dk else '#BCE3CA'
+            tog.setStyleSheet(f"""
+                QPushButton         {{background:{on_bg};color:{on_txt};
+                                      border:1px solid {PH_GREEN};border-radius:6px;
+                                      font-size:11px;font-weight:700;letter-spacing:1px;}}
+                QPushButton:hover   {{background:{on_hover};}}
+                QPushButton:pressed {{background:{on_press};}}
+            """)
+        else:
+            off_bg  = '#1A1A1E' if dk else '#EDEDF2'
+            off_txt = TXT_SEC   if dk else '#6A6A72'
+            off_bdr = BORDER2   if dk else '#D8D8DE'
+            tog.setStyleSheet(f"""
+                QPushButton         {{background:{off_bg};color:{off_txt};
+                                      border:1px solid {off_bdr};border-radius:6px;
+                                      font-size:11px;font-weight:700;letter-spacing:1px;}}
+                QPushButton:hover   {{border-color:{PH_GREEN};color:{PH_GREEN};}}
+                QPushButton:pressed {{background:{off_bdr};}}
+            """)
+
+        f_bg    = '#081428' if dk else '#EAF2FF'
+        f_bdr   = '#102248' if dk else '#C4DBFF'
+        f_hover = '#102248' if dk else '#D3E5FF'
+        f_press = '#050C18' if dk else '#BBD6FF'
+        f_htxt  = TXT_PRI   if dk else '#0A3F86'
+        self._coil_fires[i].setStyleSheet(f"""
+            QPushButton         {{background:{f_bg};color:{PH_BLUE};
+                                  border:1px solid {f_bdr};
+                                  border-radius:6px;font-size:11px;font-weight:600;}}
+            QPushButton:hover   {{background:{f_hover};color:{f_htxt};border-color:{PH_BLUE};}}
+            QPushButton:pressed {{background:{f_press};color:{f_htxt};}}
+        """)
+
+    # ── coil actions ──────────────────────────────────────────────────
+    def _on_coil_toggle(self, i: int, on: bool):
+        self._coil_on[i] = on
+        self._coil_toggles[i].setText("ON" if on else "OFF")
+        self._style_coil_row(i)
+        state = "ON" if on else "OFF"
+        self.worker.send_command(f"COIL {i+1} {state}")
+        self._comm_log(f"TX  COIL {i+1} {state}  ({self._coil_names[i]})",
+                       PH_GREEN if on else PH_AMBER)
+
+    def _on_coil_fire(self, i: int):
+        self.worker.send_command(f"FIRE {i+1}")
+        self._comm_log(f"TX  FIRE {i+1}  ({self._coil_names[i]})", PH_BLUE)
+
+    def _on_coil_rename(self, i: int):
+        txt = self._coil_edits[i].text().strip()[:COIL_NAME_MAXLEN]
+        if not txt:                                  # blank reverts to default
+            txt = COIL_DEFAULT_NAMES[i]
+            self._coil_edits[i].setText(txt)
+        if txt == self._coil_names[i]:
+            return
+        self._coil_names[i] = txt
+        save_coil_names(self._coil_names)
+        self._coil_toggles[i].setToolTip(
+            f"Enable / disable {txt} (COIL {i+1} ON|OFF)")
+        self._coil_fires[i].setToolTip(
+            f"Single Peak & Hold shot on {txt} (FIRE {i+1})")
+
+    def _apply_coil_mask(self, payload: str):
+        """Sync the toggles to the firmware's COILS:<c1>,<c2>,<c3> report."""
+        if not hasattr(self, '_coil_toggles'):
+            return
+        try:
+            bits = [int(x) for x in payload.split(',')]
+        except ValueError:
+            logging.debug(f"bad COILS report: {payload}")
+            return
+        for i in range(min(COIL_COUNT, len(bits))):
+            on  = bool(bits[i])
+            tog = self._coil_toggles[i]
+            if on == self._coil_on[i] and tog.isChecked() == on:
+                continue
+            self._coil_on[i] = on
+            tog.blockSignals(True)          # board state — do not echo it back
+            tog.setChecked(on)
+            tog.blockSignals(False)
+            tog.setText("ON" if on else "OFF")
+            self._style_coil_row(i)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  RELAY  —  MANUAL 12 V / 28 V Peak-supply select (GPIO19)
+    #
+    #  One toggle. OFF → "RELAY OFF" (12 V), ON → "RELAY ON" (28 V). The
+    #  operator confirms which physical level is which; the firmware only
+    #  holds the commanded state and never switches it per pulse. The board's
+    #  RELAY:<0|1> line (boot / change / request) is the source of truth.
+    # ══════════════════════════════════════════════════════════════════
+    def _panel_relay(self):
+        box = QGroupBox("RELAY  ·  PEAK SUPPLY")
+        v   = QVBoxLayout(box); v.setSpacing(6)
+
+        self._relay_on = False
+
+        self.relay_btn = QPushButton("OFF  ·  12V")
+        self.relay_btn.setCheckable(True)
+        self.relay_btn.setMinimumHeight(34)
+        self.relay_btn.setToolTip(
+            "Manual Peak-supply select (RELAY ON|OFF).\n"
+            "OFF = 12 V, ON = 28 V — confirm the mapping on your relay board.")
+        self.relay_btn.toggled.connect(self._on_relay_toggle)
+        v.addWidget(self.relay_btn)
+
+        hint = self._dim("MANUAL — OPERATOR SELECTS 12V / 28V")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        self._style_relay_btn()
+        return box
+
+    def _style_relay_btn(self):
+        dk = self._dark_mode
+        on = self._relay_on
+        if on:
+            bg    = '#1A1008' if dk else '#FFF3E0'
+            txt   = PH_AMBER
+            hover = '#2A1A0C' if dk else '#FFE8C4'
+            press = '#100800' if dk else '#FFDFA8'
+            self.relay_btn.setStyleSheet(f"""
+                QPushButton         {{background:{bg};color:{txt};
+                                      border:1px solid {PH_AMBER};border-radius:7px;
+                                      font-size:12px;font-weight:700;letter-spacing:1px;}}
+                QPushButton:hover   {{background:{hover};}}
+                QPushButton:pressed {{background:{press};}}
+            """)
+        else:
+            bg    = '#1A1A1E' if dk else '#EDEDF2'
+            txt   = TXT_SEC   if dk else '#6A6A72'
+            bdr   = BORDER2   if dk else '#D8D8DE'
+            self.relay_btn.setStyleSheet(f"""
+                QPushButton         {{background:{bg};color:{txt};
+                                      border:1px solid {bdr};border-radius:7px;
+                                      font-size:12px;font-weight:700;letter-spacing:1px;}}
+                QPushButton:hover   {{border-color:{PH_AMBER};color:{PH_AMBER};}}
+                QPushButton:pressed {{background:{bdr};}}
+            """)
+
+    def _on_relay_toggle(self, on: bool):
+        self._relay_on = on
+        self.relay_btn.setText("ON  ·  28V" if on else "OFF  ·  12V")
+        self._style_relay_btn()
+        self.worker.send_command("RELAY ON" if on else "RELAY OFF")
+        self._comm_log(f"TX  RELAY {'ON (28V)' if on else 'OFF (12V)'}",
+                       PH_AMBER if on else TXT_SEC)
+
+    def _apply_relay_state(self, payload: str):
+        """Sync the button to the firmware's RELAY:<0|1> line (no echo back)."""
+        if not hasattr(self, 'relay_btn'):
+            return
+        on = payload.strip() == "1"
+        if on == self._relay_on and self.relay_btn.isChecked() == on:
+            return
+        self._relay_on = on
+        self.relay_btn.blockSignals(True)
+        self.relay_btn.setChecked(on)
+        self.relay_btn.blockSignals(False)
+        self.relay_btn.setText("ON  ·  28V" if on else "OFF  ·  12V")
+        self._style_relay_btn()
+
+    # ══════════════════════════════════════════════════════════════════
+    #  VALVE SINGLE-SHOT  —  one precise plain pulse (SHOT <us>)
+    #
+    #  The discrete alternative to PUMP mode's continuous PWM: a single
+    #  hardware-timed square pulse on the valve (GPIO18), width set in µs.
+    #  Rejected by the firmware in PUMP mode (LEDC owns the pin there).
+    # ══════════════════════════════════════════════════════════════════
+    def _panel_shot(self):
+        box = QGroupBox("VALVE SINGLE-SHOT")
+        g   = QGridLayout(box); g.setSpacing(8)
+
+        g.addWidget(self._dim("DURATION (µs)"), 0, 0)
+        self.shot_sp = QSpinBox()
+        self.shot_sp.setRange(500, 5000)
+        self.shot_sp.setSingleStep(100)
+        self.shot_sp.setValue(1000)
+        self.shot_sp.setToolTip(
+            "One precise pulse on the valve (GPIO18), 500–5000 µs.\n"
+            "Hardware-timed falling edge — not continuous PWM.")
+        g.addWidget(self.shot_sp, 0, 1)
+
+        self.shot_btn = QPushButton("▶  FIRE SHOT")
+        self.shot_btn.setMinimumHeight(34)
+        self.shot_btn.setStyleSheet(f"""
+            QPushButton       {{background:#081428;color:{PH_BLUE};
+                                border:1px solid #102248;border-radius:7px;
+                                font-size:12px;font-weight:600;letter-spacing:1px;}}
+            QPushButton:hover {{background:#102248;color:{TXT_PRI};border-color:{PH_BLUE};}}
+            QPushButton:pressed {{background:#050C18;color:{TXT_PRI};}}
+        """)
+        self.shot_btn.clicked.connect(self._on_shot)
+        g.addWidget(self.shot_btn, 1, 0, 1, 2)
+
+        hint = self._dim("ONE PULSE PER PRESS — NOT CONTINUOUS PWM")
+        hint.setWordWrap(True)
+        g.addWidget(hint, 2, 0, 1, 2)
+        return box
+
+    def _on_shot(self):
+        us = self.shot_sp.value()
+        self.worker.send_command(f"SHOT {us}")
+        self._comm_log(f"TX  SHOT {us}µs", PH_BLUE)
+
+    # ── actions ───────────────────────────────────────────────────────
+    def _panel_actions(self):
+        box = QGroupBox("ACTUATORS")
+        g   = QGridLayout(box); g.setSpacing(8)
+
+        self.start_btn = QPushButton("  START")
+        self.start_btn.setFont(QFont("Arial", 13, QFont.Weight.Bold))
+        self.start_btn.setMinimumHeight(52)
+        self.start_btn.setStyleSheet(f"""
+            QPushButton         {{background:#0A2218;color:{PH_GREEN};
+                                  border:1px solid #163C28;border-radius:7px;
+                                  font-weight:600;}}
+            QPushButton:hover   {{background:#163C28;border-color:{PH_GREEN};}}
+            QPushButton:pressed {{background:#061009;}}
+        """)
+        self.start_btn.clicked.connect(self._on_start)
+
+        self.stop_btn = QPushButton("  STOP")
+        self.stop_btn.setFont(QFont("Arial", 13, QFont.Weight.Bold))
+        self.stop_btn.setMinimumHeight(52)
+        self.stop_btn.setStyleSheet(f"""
+            QPushButton         {{background:#2A1010;color:{PH_RED};
+                                  border:1px solid #44181A;border-radius:7px;
+                                  font-weight:600;}}
+            QPushButton:hover   {{background:#44181A;border-color:{PH_RED};}}
+            QPushButton:pressed {{background:#100506;}}
+        """)
+        self.stop_btn.clicked.connect(self._on_stop)
+
+        self.sync_btn = QPushButton("↺  SYNC PARAMS")
+        self.sync_btn.setMinimumHeight(30)
+        self.sync_btn.setToolTip("Re-send all parameters to ESP32")
+        self.sync_btn.setStyleSheet(f"""
+            QPushButton       {{background:#081428;color:{PH_BLUE};
+                                border:1px solid #102248;border-radius:7px;font-size:11px;font-weight:500;}}
+            QPushButton:hover {{background:#102248;color:{TXT_PRI};border-color:{PH_BLUE};}}
+            QPushButton:pressed {{background:#050C18;color:{TXT_PRI};}}
+        """)
+        self.sync_btn.clicked.connect(self._sync)
+
+        # ── Auto-stop after N seconds ─────────────────────────────────
+        autostop_row = QWidget()
+        ahr = QHBoxLayout(autostop_row); ahr.setContentsMargins(0,0,0,0); ahr.setSpacing(6)
+        ahr.addWidget(self._dim("AUTO-STOP (s)"))
+        self.autostop_sp = QSpinBox()
+        self.autostop_sp.setRange(0, 3600)
+        self.autostop_sp.setValue(0)
+        self.autostop_sp.setSpecialValueText("OFF")
+        self.autostop_sp.setToolTip("0 = disabled. Auto-stops test after N seconds.")
+        self.autostop_sp.valueChanged.connect(
+            lambda v: setattr(self, '_auto_stop_secs', v))
+        ahr.addWidget(self.autostop_sp)
+
+        # ── Save PDF Report ───────────────────────────────────────────
+        self.report_btn = QPushButton("  SAVE PDF REPORT")
+        self.report_btn.setMinimumHeight(30)
+        self.report_btn.setStyleSheet(f"""
+            QPushButton       {{background:#081A12;color:{PH_GREEN};
+                                border:1px solid #102C1E;border-radius:7px;font-size:11px;font-weight:500;}}
+            QPushButton:hover {{background:#102C1E;color:{TXT_PRI};border-color:{PH_GREEN};}}
+            QPushButton:pressed {{background:#040D09;color:{TXT_PRI};}}
+        """)
+        self.report_btn.clicked.connect(self._save_pdf)
+
+        # ── Export CSV ────────────────────────────────────────────────
+        self.csv_btn = QPushButton("  EXPORT CSV")
+        self.csv_btn.setMinimumHeight(30)
+        self.csv_btn.setStyleSheet(f"""
+            QPushButton       {{background:#0A1820;color:{PH_CYAN};
+                                border:1px solid #122838;border-radius:7px;font-size:11px;font-weight:500;}}
+            QPushButton:hover {{background:#122838;color:{TXT_PRI};border-color:{PH_CYAN};}}
+            QPushButton:pressed {{background:#050C10;color:{TXT_PRI};}}
+        """)
+        self.csv_btn.clicked.connect(self._export_csv)
+
+        # ── Zero Calibration button ───────────────────────────────────
+        self.zero_btn = QPushButton("◎  SET ZERO PRESSURE")
+        self.zero_btn.setMinimumHeight(30)
+        self.zero_btn.setToolTip(
+            "Press at zero pressure — auto-sets VP_ZERO from current VX4 EMA")
+        self.zero_btn.setStyleSheet(f"""
+            QPushButton       {{background:#1A1008;color:{PH_AMBER};
+                                border:1px solid #3A2810;border-radius:7px;
+                                font-size:11px;font-weight:600;}}
+            QPushButton:hover {{background:#2A1A0C;color:{TXT_PRI};border-color:{PH_AMBER};}}
+            QPushButton:pressed {{background:#100800;}}
+        """)
+        self.zero_btn.clicked.connect(self._set_pressure_zero)
+
+        g.addWidget(self.start_btn,    0, 0)
+        g.addWidget(self.stop_btn,     0, 1)
+        g.addWidget(self.sync_btn,     1, 0, 1, 2)
+        g.addWidget(autostop_row,      2, 0, 1, 2)
+        g.addWidget(self.zero_btn,     3, 0, 1, 2)
+        g.addWidget(self.report_btn,   4, 0)
+        g.addWidget(self.csv_btn,      4, 1)
+        return box
+
+
+    # ── meters panel (Hartridge-style large displays) ─────────────────
+    def _panel_meters(self):
+        box = QGroupBox("MEASUREMENTS")
+        h   = QVBoxLayout(box); h.setSpacing(4)
+
+        dk = self._dark_mode  # capture once for all meter() calls
+
+        def meter(label, color, digits, unit=""):
+            frame = QWidget()
+            frame_bg  = PANEL   if dk else '#FFFFFF'
+            frame_bdr = BORDER2 if dk else '#E0E0E6'
+            frame.setStyleSheet(
+                f"background:{frame_bg}; border:1px solid {frame_bdr}; border-radius:6px;")
+            v = QVBoxLayout(frame); v.setContentsMargins(10, 8, 10, 8); v.setSpacing(4)
+
+            lbl = QLabel(label.upper())
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # In dark mode: alpha-dimmed accent. In light mode: full-color accent.
+            lbl_color = f"{color}50" if dk else color
+            lbl.setStyleSheet(
+                f"color:{lbl_color}; font-size:9px; font-weight:bold;"
+                f" letter-spacing:2px; font-family:monospace; border:none;")
+
+            lcd = QLCDNumber()
+            lcd.setDigitCount(digits)
+            lcd.setMinimumSize(10, 55)   # override large default minimumSizeHint
+            lcd.setSegmentStyle(QLCDNumber.SegmentStyle.Flat)
+            lcd.setStyleSheet(
+                f"QLCDNumber{{color:{color}; background:{G_BG};"
+                f" border:1px solid {color}28; border-radius:4px;}}")
+
+            unit_lbl = QLabel(unit)
+            unit_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            unit_color = f"{color}60" if dk else f"{color}CC"
+            unit_lbl.setStyleSheet(
+                f"color:{unit_color}; font-size:10px; font-family:monospace; border:none;")
+
+            v.addWidget(lbl)
+            v.addWidget(lcd)
+            v.addWidget(unit_lbl)
+            return frame, lcd
+
+        # Store frame refs for Feature 4 alarm blinking + theme toggle
+        self.frame_r, self.lcd_r = meter("RPM",      PH_PURPLE, 5, "RPM")
+        self.frame_p, self.lcd_p = meter("PRESSURE", PH_AMBER,  7, "BAR")
+        self.frame_a, self.lcd_a = meter("ANGLE",    PH_BLUE,   3, "deg")
+        f3 = self.frame_a
+
+        # Force equal horizontal distribution — ignore per-widget sizeHints
+        from PyQt6.QtWidgets import QSizePolicy as _SP
+        _eq = _SP(_SP.Policy.Ignored, _SP.Policy.Preferred)
+        self.frame_r.setSizePolicy(_eq)
+        self.frame_p.setSizePolicy(_eq)
+        f3.setSizePolicy(_eq)
+
+        # ── INJ LED panel — flashes green on every injection pulse ────
+        dk = self._dark_mode
+        f2 = QWidget()
+        self.frame_inj = f2
+        f2.setStyleSheet(
+            f"background:{'#1C1C1E' if dk else '#FFFFFF'};"
+            f" border:1px solid {'#2C2C2E' if dk else '#E0E0E6'}; border-radius:6px;")
+        v2 = QVBoxLayout(f2); v2.setContentsMargins(10, 8, 10, 8); v2.setSpacing(6)
+
+        inj_title = QLabel("INJ PULSE")
+        inj_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        inj_title.setStyleSheet(
+            f"color:{PH_GREEN}50; font-size:9px; font-weight:bold;"
+            f" letter-spacing:2px; font-family:monospace; border:none;")
+
+        self.inj_led = QLabel()
+        self.inj_led.setMinimumHeight(55)
+        self.inj_led.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._led_on_style  = (
+            f"background:{PH_GREEN}; border-radius:10px;"
+            f" border:2px solid #60FF90;")
+        self._led_off_style = (
+            f"background:#0A1A0D; border-radius:10px;"
+            f" border:2px solid #1A3A20;")
+        self.inj_led.setStyleSheet(self._led_off_style)
+
+        self.inj_rate_lbl = QLabel("0 inj/s")
+        self.inj_rate_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.inj_rate_lbl.setStyleSheet(
+            f"color:{PH_GREEN}80; font-size:10px; font-family:monospace; border:none;")
+
+        v2.addWidget(inj_title)
+        v2.addWidget(self.inj_led, 1)
+        v2.addWidget(self.inj_rate_lbl)
+
+        # Timer to turn LED off after flash
+        self._led_timer = QTimer(self)
+        self._led_timer.setSingleShot(True)
+        self._led_timer.setInterval(80)   # LED stays on 80 ms
+        self._led_timer.timeout.connect(
+            lambda: self.inj_led.setStyleSheet(self._led_off_style))
+
+        self.lcd_i = None   # kept for compatibility, not displayed
+        from PyQt6.QtWidgets import QSizePolicy as _SP2
+        f2.setSizePolicy(_SP2(_SP2.Policy.Ignored, _SP2.Policy.Preferred))
+
+        # Engine status
+        status_box = QWidget()
+        self.frame_engine = status_box
+        status_box.setStyleSheet(
+            f"background:{PANEL}; border:1px solid {BORDER2}; border-radius:6px;")
+        sv = QVBoxLayout(status_box); sv.setContentsMargins(10, 8, 10, 8); sv.setSpacing(6)
+
+        sl = QLabel("ENGINE")
+        sl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sl.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:9px; font-weight:bold;"
+            f" letter-spacing:2px; font-family:monospace; border:none;")
+
+        self.run_lbl = QLabel("STOPPED")
+        self.run_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.run_lbl.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        self.run_lbl.setStyleSheet(
+            f"color:{PH_RED}; font-family:monospace; border:none;")
+
+        self.mode_lbl = QLabel("COMMON RAIL")
+        self.mode_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mode_lbl.setStyleSheet(
+            f"color:{PH_BLUE}; font-size:11px; font-family:monospace;"
+            f" letter-spacing:1px; border:none;")
+
+        sv.addWidget(sl)
+        sv.addStretch()
+        sv.addWidget(self.run_lbl)
+        sv.addWidget(self.mode_lbl)
+        sv.addStretch()
+
+        # ── Row 1: primary readings ───────────────────────────────────────
+        top_row = QHBoxLayout(); top_row.setSpacing(6)
+        top_row.addWidget(self.frame_r, stretch=1)   # RPM
+        top_row.addWidget(self.frame_p, stretch=1)   # PRESSURE
+        top_row.addWidget(f2,           stretch=1)   # INJ PULSE
+
+        # ── Row 2: secondary readings + engine state ───────────────────
+        bot_row = QHBoxLayout(); bot_row.setSpacing(6)
+        bot_row.addWidget(f3,           stretch=1)   # ANGLE
+        bot_row.addWidget(status_box,   stretch=2)   # ENGINE STATUS
+        bot_row.addStretch(1)
+        bot_container = QWidget()
+        bot_container.setLayout(bot_row)
+
+        h.addLayout(top_row,       stretch=3)
+        h.addWidget(bot_container, stretch=2)
+
+        return box
+
+    # ── helpers ───────────────────────────────────────────────────────
+    def _dim(self, txt):
+        l = QLabel(txt)
+        color = TXT_DIM if self._dark_mode else '#3A3A4A'
+        l.setStyleSheet(
+            f"color:{color}; font-size:9px; font-weight:bold;"
+            f" letter-spacing:1px; font-family:monospace;")
+        return l
+
+    def _vsep(self):
+        f = QFrame(); f.setFrameShape(QFrame.Shape.VLine)
+        f.setStyleSheet(f"color:{BORDER2};")
+        f.setFixedHeight(22)
+        return f
+
+    def _style_conn_btn(self, connected):
+        if self._dark_mode:
+            if connected:
+                self.conn_btn.setStyleSheet(f"""
+                    QPushButton       {{background:#2A1010;color:{PH_RED};
+                                        font-weight:600;border-radius:7px;border:1px solid #44181A;}}
+                    QPushButton:hover {{background:#44181A;border-color:{PH_RED};}}
+                    QPushButton:pressed {{background:#100506;}}""")
+            else:
+                self.conn_btn.setStyleSheet(f"""
+                    QPushButton       {{background:#081428;color:{PH_BLUE};
+                                        font-weight:600;border-radius:7px;border:1px solid #102248;}}
+                    QPushButton:hover {{background:#102248;color:{TXT_PRI};border-color:{PH_BLUE};}}
+                    QPushButton:pressed {{background:#050C18;}}""")
+        else:
+            if connected:
+                self.conn_btn.setStyleSheet("""
+                    QPushButton       {background:#FFE5E3;color:#C0281E;
+                                        font-weight:600;border-radius:7px;border:1px solid #FFBBBA;}
+                    QPushButton:hover {background:#FFBBBA;border-color:#FF453A;}
+                    QPushButton:pressed {background:#FFAAAA;}""")
+            else:
+                self.conn_btn.setStyleSheet("""
+                    QPushButton       {background:#E5F0FF;color:#0A5CC7;
+                                        font-weight:600;border-radius:7px;border:1px solid #B8D4FF;}
+                    QPushButton:hover {background:#B8D4FF;color:#063A8A;border-color:#0A84FF;}
+                    QPushButton:pressed {background:#98C0F5;}""")
+
+    def _cam_visible(self, vis):
+        for w in [self.fr_lbl, self.fr_sp, self.fr_sl]:
+            w.setVisible(not vis)
+        for w in [self.an_lbl, self.an_sp, self.an_sl, self.delay_lbl]:
+            w.setVisible(vis)
+
+    def _update_delay_label(self):
+        if self._mode_id == 1:
+            if self._rpm_ema > 10:
+                period_ms = 60000.0 / self._rpm_ema
+                delay_ms  = (self.an_sp.value() / 360.0) * period_ms
+                self.delay_lbl.setText(
+                    f"DELAY  {delay_ms:.3f} ms  "
+                    f"({self.an_sp.value()}  @ {int(self._rpm_ema)} RPM)")
+            else:
+                self.delay_lbl.setText("DELAY  —  waiting for RPM signal")
+
+    # ──────────────────────────────────────────────────────────────────
+    #  PROFILE SYSTEM — Brand / Model / Mode handlers
+    # ──────────────────────────────────────────────────────────────────
+    # ── Table right-click — PIN-protected spec editing ────────────────
+    _DEV_PIN = "26157048"
+
+    # Column index → JSON field mapping (editable spec columns only)
+    _COL_FIELD = {
+        1: "rpm",
+        2: "pulse_us",
+        3: "duration_s",
+        4: "vol_target",
+        5: "vol_min",
+        6: "vol_max",
+    }
+    _COL_LABEL = {
+        1: "RPM",
+        2: "PW (µs)",
+        3: "Time (s)",
+        4: "Target (ml)",
+        5: "Min (ml)",
+        6: "Max (ml)",
+    }
+
+    def _verify_dev_pin(self) -> bool:
+        """Ask for PIN every time before any edit."""
+        from PyQt6.QtWidgets import QInputDialog
+        pin, ok = QInputDialog.getText(
+            self, "🔒  Developer Access",
+            "Enter developer PIN:",
+            QLineEdit.EchoMode.Password)
+        if ok and pin == self._DEV_PIN:
+            return True
+        if ok:
+            QMessageBox.warning(self, "Access Denied", "❌  Incorrect PIN.")
+        return False
+
+    def _table_context_menu(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        t   = self._calib_table
+        idx = t.indexAt(pos)
+        row, col = idx.row(), idx.column()
+        if row < 0 or col not in self._COL_FIELD:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{background:{PANEL};color:{TXT_PRI};border:1px solid {BORDER2};
+                    font-size:12px;padding:4px;}}
+            QMenu::item {{padding:6px 20px;border-radius:4px;}}
+            QMenu::item:selected {{background:{PH_BLUE}33;color:{TXT_PRI};}}
+        """)
+        mode_name  = t.item(row, 0).text()
+        field_name = self._COL_LABEL[col]
+        cur_val    = t.item(row, col).text() if t.item(row, col) else "—"
+        edit_act = menu.addAction(
+            f"✏  Edit  [{mode_name}]  {field_name}  =  {cur_val}")
+        action = menu.exec(t.viewport().mapToGlobal(pos))
+        if action != edit_act:
+            return
+        if not self._verify_dev_pin():
+            return
+        self._table_edit_cell(row, col, mode_name, field_name, cur_val)
+
+    def _table_edit_cell(self, row, col, mode_name, field_name, cur_val):
+        from PyQt6.QtWidgets import QInputDialog
+        # Map display name back to JSON key
+        json_mode = "CamBox" if mode_name == "VE" else mode_name
+        json_field = self._COL_FIELD[col]
+
+        new_val, ok = QInputDialog.getText(
+            self, f"Edit  {field_name}",
+            f"{mode_name}  →  {field_name}\nCurrent: {cur_val}\n\nNew value:",
+            QLineEdit.EchoMode.Normal, cur_val)
+        if not ok or not new_val.strip():
+            return
+        try:
+            # Numeric conversion
+            if json_field in ("rpm", "pulse_us", "duration_s"):
+                typed_val = int(float(new_val.strip()))
+            else:
+                typed_val = float(new_val.strip())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Value", "Please enter a number.")
+            return
+
+        # Save to active profile in database
+        if not self._active_profile:
+            QMessageBox.warning(self, "No Profile",
+                "Load a profile first before editing.")
+            return
+        pid = self._active_profile.get("id")
+        updated = dict(self._active_profile)
+        if json_mode not in updated.get("modes", {}):
+            updated.setdefault("modes", {})[json_mode] = {}
+        updated["modes"][json_mode][json_field] = typed_val
+        self._injector_db.update_profile(pid, updated)
+        self._active_profile = self._injector_db.by_id(pid)
+        # Refresh table display
+        self._populate_calib_table(self._active_profile)
+        self._refresh_cylinders(self._active_profile)
+
+    # ── Model right-click context menu ───────────────────────────────
+    def _model_context_menu(self, pos):
+        from PyQt6.QtWidgets import QMenu
+        idx = self.model_combo.currentIndex()
+        pid = self.model_combo.itemData(idx)
+        if not pid:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{background:{PANEL};color:{TXT_PRI};border:1px solid {BORDER2};
+                    font-size:12px;padding:4px;}}
+            QMenu::item {{padding:6px 20px;border-radius:4px;}}
+            QMenu::item:selected {{background:{PH_BLUE}33;color:{TXT_PRI};}}
+        """)
+        edit_act  = menu.addAction("✏  Edit profile values")
+        menu.addSeparator()
+        del_act   = menu.addAction("🗑  Delete profile")
+        action = menu.exec(self.model_combo.mapToGlobal(pos))
+        if action == edit_act:
+            if not self._verify_dev_pin():
+                return
+            self._edit_profile_dialog(pid)
+        elif action == del_act:
+            if not self._verify_dev_pin():
+                return
+            profile = self._injector_db.by_id(pid)
+            if profile:
+                r = QMessageBox.question(self, "Delete Profile",
+                    f"Delete  {profile['brand']} — {profile['model']} ?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if r == QMessageBox.StandardButton.Yes:
+                    self._injector_db.delete_profile(pid)
+                    self.brand_combo.blockSignals(True)
+                    self.brand_combo.clear()
+                    self.brand_combo.addItem("— Select Brand —")
+                    self.brand_combo.addItems(self._injector_db.brands())
+                    self.brand_combo.blockSignals(False)
+                    self.brand_combo.setCurrentIndex(0)
+
+    def _edit_profile_dialog(self, pid: str):
+        from PyQt6.QtWidgets import (QDialog, QTabWidget, QFormLayout,
+                                      QDialogButtonBox, QScrollArea)
+        profile = self._injector_db.by_id(pid)
+        if not profile:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Edit  {profile['brand']} — {profile['model']}")
+        dlg.setMinimumSize(480, 520)
+        dlg.setStyleSheet(f"background:{PANEL}; color:{TXT_PRI};")
+
+        def fld(val=""):
+            e = QLineEdit(str(val))
+            e.setStyleSheet(f"background:{BORDER};color:{TXT_PRI};"
+                            f"border:1px solid {BORDER2};border-radius:5px;padding:3px 7px;")
+            return e
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane  {{border:1px solid {BORDER2};border-radius:6px;}}
+            QTabBar::tab      {{background:{BORDER};color:{TXT_SEC};padding:5px 12px;
+                               border-radius:4px;margin-right:2px;}}
+            QTabBar::tab:selected {{background:{PH_BLUE}44;color:{TXT_PRI};}}
+        """)
+
+        # ── Info tab ──────────────────────────────────────────────────
+        info_w = QWidget(); info_f = QFormLayout(info_w)
+        info_f.setSpacing(6); info_f.setContentsMargins(12,12,12,12)
+        f_brand  = fld(profile.get("brand",""))
+        f_model  = fld(profile.get("model",""))
+        f_type   = fld(profile.get("type",""))
+        f_engine = fld(profile.get("engine",""))
+        s = profile.get("safety", {})
+        f_maxpw  = fld(s.get("max_pulse_us",""))
+        f_maxhz  = fld(s.get("max_freq_hz",""))
+        f_maxrpm = fld(s.get("max_rpm",""))
+        info_f.addRow("Brand",        f_brand)
+        info_f.addRow("Model",        f_model)
+        info_f.addRow("Type",         f_type)
+        info_f.addRow("Engine",       f_engine)
+        info_f.addRow("Max PW (µs)",  f_maxpw)
+        info_f.addRow("Max Hz",       f_maxhz)
+        info_f.addRow("Max RPM",      f_maxrpm)
+        tabs.addTab(info_w, "INFO")
+
+        # ── Mode tabs ─────────────────────────────────────────────────
+        mode_fields = {}
+        for mname in ["Idle", "Medium", "Full Load", "Leak Test", "CamBox"]:
+            mp = profile.get("modes", {}).get(mname, {})
+            mw = QWidget(); mf = QFormLayout(mw)
+            mf.setSpacing(6); mf.setContentsMargins(12,12,12,12)
+            fields = {
+                "rpm":        fld(mp.get("rpm",       "")),
+                "pulse_us":   fld(mp.get("pulse_us",  "")),
+                "freq_hz":    fld(mp.get("freq_hz",   "")),
+                "duration_s": fld(mp.get("duration_s","")),
+                "rail_bar":   fld(mp.get("rail_bar",  "")),
+                "vol_target": fld(mp.get("vol_target","")),
+                "vol_min":    fld(mp.get("vol_min",   "")),
+                "vol_max":    fld(mp.get("vol_max",   "")),
+            }
+            mf.addRow("RPM",        fields["rpm"])
+            mf.addRow("PW (µs)",    fields["pulse_us"])
+            mf.addRow("Hz",         fields["freq_hz"])
+            mf.addRow("Time (s)",   fields["duration_s"])
+            mf.addRow("Rail BAR",   fields["rail_bar"])
+            mf.addRow("Target ml",  fields["vol_target"])
+            mf.addRow("Min ml",     fields["vol_min"])
+            mf.addRow("Max ml",     fields["vol_max"])
+            mode_fields[mname] = fields
+            label = "VE" if mname == "CamBox" else mname
+            tabs.addTab(mw, label)
+
+        # ── Layout ────────────────────────────────────────────────────
+        main_v = QVBoxLayout(dlg)
+        main_v.setContentsMargins(12,12,12,12); main_v.setSpacing(8)
+        main_v.addWidget(tabs)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Cancel)
+        btns.setStyleSheet(f"""
+            QPushButton {{background:{BORDER};color:{PH_BLUE};
+                          border:1px solid {BORDER2};border-radius:5px;
+                          padding:5px 20px;font-weight:600;}}
+            QPushButton:hover {{background:{BORDER2};color:{TXT_PRI};}}
+        """)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        main_v.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # ── Save changes ──────────────────────────────────────────────
+        def num(e, default=0.0):
+            try: return float(e.text())
+            except: return default
+
+        updated = dict(profile)
+        updated["brand"]  = f_brand.text().strip()  or profile["brand"]
+        updated["model"]  = f_model.text().strip()  or profile["model"]
+        updated["type"]   = f_type.text().strip()
+        updated["engine"] = f_engine.text().strip()
+        updated["safety"] = {
+            "max_pulse_us": int(num(f_maxpw, s.get("max_pulse_us",800))),
+            "max_freq_hz":  int(num(f_maxhz,  s.get("max_freq_hz",15))),
+            "max_rpm":      int(num(f_maxrpm, s.get("max_rpm",4000))),
+        }
+        for mname, fields in mode_fields.items():
+            if mname not in updated["modes"]:
+                updated["modes"][mname] = {}
+            mp = updated["modes"][mname]
+            mp["rpm"]        = int(num(fields["rpm"],        mp.get("rpm",0)))
+            mp["pulse_us"]   = int(num(fields["pulse_us"],   mp.get("pulse_us",200)))
+            mp["freq_hz"]    = int(num(fields["freq_hz"],    mp.get("freq_hz",2)))
+            mp["duration_s"] = int(num(fields["duration_s"], mp.get("duration_s",60)))
+            mp["rail_bar"]   = int(num(fields["rail_bar"],   mp.get("rail_bar",0)))
+            mp["vol_target"] = num(fields["vol_target"], mp.get("vol_target",0))
+            mp["vol_min"]    = num(fields["vol_min"],    mp.get("vol_min",0))
+            mp["vol_max"]    = num(fields["vol_max"],    mp.get("vol_max",5))
+
+        self._injector_db.update_profile(pid, updated)
+        # Refresh brand combo if brand changed
+        self.brand_combo.blockSignals(True)
+        self.brand_combo.clear()
+        self.brand_combo.addItem("— Select Brand —")
+        self.brand_combo.addItems(self._injector_db.brands())
+        self.brand_combo.blockSignals(False)
+        self.brand_combo.setCurrentText(updated["brand"])
+        QMessageBox.information(self, "Edit Profile", "✓  Changes saved.")
+
+    # ── Search filter ─────────────────────────────────────────────────
+    def _on_search_changed(self, text: str):
+        """Filter brand/model combos as user types."""
+        q = text.strip().lower()
+        self.brand_combo.blockSignals(True)
+        self.brand_combo.clear()
+        self.brand_combo.addItem("— Select Brand —")
+        all_brands = self._injector_db.brands()
+        if not q:
+            self.brand_combo.addItems(all_brands)
+        else:
+            # Show brands that match or have a matching model
+            for b in all_brands:
+                if q in b.lower():
+                    self.brand_combo.addItem(b)
+                else:
+                    models = [p["model"] for p in self._injector_db.by_brand(b)]
+                    if any(q in m.lower() for m in models):
+                        self.brand_combo.addItem(b)
+        self.brand_combo.blockSignals(False)
+        # Auto-select if only one brand matches
+        if self.brand_combo.count() == 2:
+            self.brand_combo.setCurrentIndex(1)
+
+    # ── Add new profile dialog ─────────────────────────────────────────
+    def _on_add_profile(self):
+        if not self._verify_dev_pin():
+            return
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add Injector Profile")
+        dlg.setMinimumWidth(360)
+        dlg.setStyleSheet(f"background:{PANEL}; color:{TXT_PRI};")
+        form = QFormLayout(dlg)
+        form.setSpacing(8); form.setContentsMargins(16, 16, 16, 16)
+
+        def field(placeholder=""):
+            e = QLineEdit(); e.setPlaceholderText(placeholder)
+            e.setStyleSheet(f"background:{BORDER};color:{TXT_PRI};"
+                            f"border:1px solid {BORDER2};border-radius:5px;padding:4px 8px;")
+            return e
+
+        f_brand  = field("e.g. Bosch / EUI Iveco")
+        f_model  = field("e.g. CRI 2.0 TDI")
+        f_type   = field("e.g. Common Rail Solenoid")
+        f_engine = field("e.g. 2.0 TDI")
+        f_max_pw = field("e.g. 800")
+        f_max_hz = field("e.g. 15")
+
+        form.addRow("Brand",       f_brand)
+        form.addRow("Model",       f_model)
+        form.addRow("Type",        f_type)
+        form.addRow("Engine",      f_engine)
+        form.addRow("Max PW (µs)", f_max_pw)
+        form.addRow("Max Hz",      f_max_hz)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        btns.setStyleSheet(f"""
+            QPushButton {{background:{BORDER};color:{PH_BLUE};
+                          border:1px solid {BORDER2};border-radius:5px;
+                          padding:4px 16px;font-weight:600;}}
+            QPushButton:hover {{background:{BORDER2};color:{TXT_PRI};}}
+        """)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        brand  = f_brand.text().strip()
+        model  = f_model.text().strip()
+        if not brand or not model:
+            QMessageBox.warning(self, "Add Profile", "Brand and Model are required.")
+            return
+
+        pid = f"{brand.upper().replace(' ','_')}_{model.upper().replace(' ','_')[:20]}"
+        try:
+            max_pw = int(f_max_pw.text()) if f_max_pw.text().strip() else 800
+            max_hz = int(f_max_hz.text()) if f_max_hz.text().strip() else 15
+        except ValueError:
+            max_pw, max_hz = 800, 15
+
+        new_profile = {
+            "id":      pid,
+            "brand":   brand,
+            "model":   model,
+            "type":    f_type.text().strip() or "Common Rail Solenoid",
+            "engine":  f_engine.text().strip() or "",
+            "notes":   "",
+            "safety":  {"max_pulse_us": max_pw, "max_freq_hz": max_hz, "max_rpm": 4000},
+            "modes": {
+                "Idle":      {"rail_bar":250, "pulse_us":200, "freq_hz":2, "duration_s":60,
+                              "delay_deg":0, "rpm":800,
+                              "vol_min":0.0, "vol_target":0.0, "vol_max":5.0, "vol_unit":"ml/1000"},
+                "Medium":    {"rail_bar":750, "pulse_us":350, "freq_hz":5, "duration_s":60,
+                              "delay_deg":0, "rpm":1500,
+                              "vol_min":0.0, "vol_target":0.0, "vol_max":15.0, "vol_unit":"ml/1000"},
+                "Full Load": {"rail_bar":1350,"pulse_us":500, "freq_hz":10,"duration_s":60,
+                              "delay_deg":0, "rpm":3000,
+                              "vol_min":0.0, "vol_target":0.0, "vol_max":25.0, "vol_unit":"ml/1000"},
+                "Leak Test": {"rail_bar":100, "pulse_us":200, "freq_hz":1, "duration_s":30,
+                              "delay_deg":0, "rpm":0,
+                              "vol_min":0.0, "vol_target":0.0, "vol_max":2.0,  "vol_unit":"ml/min"},
+                "CamBox":    {"rail_bar":750, "pulse_us":350, "freq_hz":5, "duration_s":120,
+                              "delay_deg":5, "rpm":1500,
+                              "vol_min":0.0, "vol_target":0.0, "vol_max":15.0, "vol_unit":"ml/1000"},
+            }
+        }
+        self._injector_db.add_profile(new_profile)
+        # Refresh brand combo
+        self.brand_combo.blockSignals(True)
+        self.brand_combo.clear()
+        self.brand_combo.addItem("— Select Brand —")
+        self.brand_combo.addItems(self._injector_db.brands())
+        self.brand_combo.blockSignals(False)
+        self.brand_combo.setCurrentText(brand)
+        QMessageBox.information(self, "Add Profile",
+            f"✓  {brand}  —  {model}\nProfile added. Edit the spec values in injector_db.json.")
+
+    def _on_brand_change(self, brand: str):
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItem("— Select Model —")
+        if brand and not brand.startswith("—"):
+            for p in self._injector_db.by_brand(brand):
+                self.model_combo.addItem(p["model"], userData=p["id"])
+        self.model_combo.blockSignals(False)
+        self._active_profile = None
+        self._profile_info.setText("Select a model to load profile")
+        self._safety_lbl.setText("")
+        self._safety.set_profile(None)
+
+    def _on_model_change(self, model: str):
+        if model.startswith("—"):
+            return
+        idx = self.model_combo.currentIndex()
+        pid = self.model_combo.itemData(idx)
+        if not pid:
+            return
+        profile = self._injector_db.by_id(pid)
+        if not profile:
+            return
+        self._active_profile = profile
+        self._safety.set_profile(profile)
+        # Update info card
+        s = profile.get("safety", {})
+        info = (f"{profile.get('type','')}  |  {profile.get('engine','')}\n"
+                f"Max: {s.get('max_pulse_us','—')} µs  "
+                f"{s.get('max_freq_hz','—')} Hz  "
+                f"{s.get('max_rpm','—')} RPM")
+        self._profile_info.setText(info)
+        self._safety_lbl.setText(
+            f"⚠  Limits: PW≤{s.get('max_pulse_us')} µs  "
+            f"Freq≤{s.get('max_freq_hz')} Hz")
+        # Refresh calibration table + cylinder gauges
+        if hasattr(self, '_calib_table'):
+            self._populate_calib_table(profile)
+        self._refresh_cylinders(profile)
+        # Auto-load current mode params
+        mode = self.mode_combo.currentText()
+        if mode == "VE":
+            self._on_cambox_profile_change(self.cambox_combo.currentText())
+        else:
+            self._load_mode_params(mode)
+
+    def _on_mode_combo_change(self, mode: str):
+        self._active_mode = mode
+        # Show/hide CamBox sub-selector
+        is_cb = (mode == "VE")
+        self.cambox_combo.setVisible(is_cb)
+        self._cambox_row_lbl.setVisible(is_cb)
+        if is_cb:
+            self._on_cambox_profile_change(self.cambox_combo.currentText())
+        elif self._active_profile:
+            self._load_mode_params(mode)
+
+    def _on_cambox_profile_change(self, name: str):
+        """Load a CamBox profile (Cranking / Idle / Diagnostic / Performance Test)."""
+        params = self._injector_db.cambox_profiles().get(name)
+        if not params:
+            return
+        self._apply_params(params, f"CamBox — {name}")
+
+    def _load_mode_params(self, mode: str):
+        """Load parameters from the active injector profile's selected mode."""
+        if not self._active_profile:
+            return
+        modes    = self._active_profile.get("modes", {})
+        json_key = "CamBox" if mode == "VE" else mode
+        params   = modes.get(json_key)
+        if not params:
+            return
+        p = self._active_profile
+        self._apply_params(params, f"{p.get('model','')}  —  {mode}")
+
+    def _apply_params(self, params: dict, label: str):
+        """Validate + apply a parameter dict to spinboxes."""
+        pw    = params.get("pulse_us",   200)
+        freq  = params.get("freq_hz",    2)
+        angle = params.get("delay_deg",  0)
+        dur   = params.get("duration_s", 0)
+        rpm   = params.get("rpm",        0)
+        # Validate through safety layer
+        _, pw,    msg1 = self._safety.validate_pulse(pw)
+        _, freq,  msg2 = self._safety.validate_freq(freq)
+        _, angle, msg3 = self._safety.validate_delay(angle)
+        # Block signals — fill all at once
+        for sp in [self.pw_sp, self.fr_sp, self.an_sp]:
+            sp.blockSignals(True)
+        self.pw_sp.setValue(pw);    self.pw_sl.setValue(pw)
+        self.fr_sp.setValue(freq);  self.fr_sl.setValue(freq)
+        self.an_sp.setValue(angle); self.an_sl.setValue(angle)
+        if hasattr(self, 'autostop_sp') and dur > 0:
+            self.autostop_sp.setValue(dur)
+            self._auto_stop_secs = dur
+        for sp in [self.pw_sp, self.fr_sp, self.an_sp]:
+            sp.blockSignals(False)
+        # Update target RPM label
+        if rpm > 0:
+            self._rpm_target_lbl.setText(f"Target RPM: {rpm}")
+            self._rpm_target_lbl.setStyleSheet(
+                f"color:{PH_PURPLE}; font-size:10px; font-family:monospace; padding:1px 0;")
+        else:
+            self._rpm_target_lbl.setText("Target RPM: LEAK TEST (no injection)")
+            self._rpm_target_lbl.setStyleSheet(
+                f"color:{PH_AMBER}; font-size:10px; font-family:monospace; padding:1px 0;")
+        # Log any clamping warnings
+        for msg in [msg1, msg2, msg3]:
+            if msg:
+                self._comm_log(f"⚠  {msg}", PH_AMBER)
+        self._profile_info.setText(
+            f"{label}\n"
+            f"PW {pw} µs  |  {freq} Hz  |  {angle}°  |  {dur} s")
+
+    # Backward-compat stub (kept so PDF report and other callers don't break)
+    def _apply_preset(self, name: str):
+        pass
+
+    # ──────────────────────────────────────────────────────────────────
+    #  FEATURE 2 — Save PDF Report
+    # ──────────────────────────────────────────────────────────────────
+    def _save_pdf(self):
+        try:
+            from PyQt6.QtPrintSupport import QPrinter
+        except ImportError:
+            QMessageBox.warning(self, "PDF Error",
+                                "PyQt6.QtPrintSupport not available.\n"
+                                "Run:  pip install PyQt6-Qt6-PrintSupport")
+            return
+
+        ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default  = f"Injector_Report_{ts}.pdf"
+        path, _  = QFileDialog.getSaveFileName(
+            self, "Save PDF Report", default, "PDF Files (*.pdf)")
+        if not path:
+            return
+
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(path)
+
+        try:
+            from PyQt6.QtGui import QPageSize
+            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        except Exception:
+            pass
+
+        painter = QPainter()
+        if not painter.begin(printer):
+            QMessageBox.critical(self, "PDF Error", f"Cannot write to:\n{path}")
+            return
+
+        page   = printer.pageRect(QPrinter.Unit.DevicePixel)
+        W      = page.width()
+        H      = page.height()
+        margin = W * 0.06
+
+        # Font sizes must be in POINTS (physical, DPI-independent) — never a
+        # fraction of the pixel width (that yields ~190pt at 1200 DPI).
+        _dpi   = printer.resolution() or 1200
+        _pw_pt = W / _dpi * 72.0          # page width in points (~575 for A4)
+        def _pt(frac):
+            return max(5, round(_pw_pt * frac * 1.5))
+
+        # ── header bar ────────────────────────────────────────────────
+        painter.fillRect(0, 0, int(W), int(H * 0.07), QColor(HEADER))
+        painter.setPen(QColor(PH_GREEN))
+        painter.setFont(QFont("Arial", _pt(0.018), QFont.Weight.Bold))
+        painter.drawText(int(margin), int(H * 0.044),
+                         "INJECTOR PRO  —  Diesel Injection Test Report")
+        # Date — right-aligned just under the title so it never overlaps.
+        # Use painter.fontMetrics() (device DPI) not QFontMetrics (screen DPI).
+        painter.setPen(QColor(TXT_SEC))
+        painter.setFont(QFont("Arial", _pt(0.0095)))
+        now_str = datetime.datetime.now().strftime("%A, %d %B %Y  %H:%M")
+        dw = painter.fontMetrics().horizontalAdvance(now_str)
+        painter.drawText(int(W - margin - dw), int(H * 0.062), now_str)
+
+        # ── helpers ───────────────────────────────────────────────────
+        def hline(y):
+            painter.setPen(QColor(BORDER2))
+            painter.drawLine(int(margin), int(y), int(W - margin), int(y))
+
+        def section(x, y, title, color=PH_BLUE):
+            painter.setFont(QFont("Arial", _pt(0.011), QFont.Weight.Bold))
+            painter.setPen(QColor(color))
+            painter.drawText(int(x), int(y), title)
+
+        def draw_kv(x, y, key, val, key_color=TXT_DIM, val_color=TXT_PRI):
+            painter.setFont(QFont("Courier New", _pt(0.0095), QFont.Weight.Bold))
+            painter.setPen(QColor(key_color))
+            painter.drawText(int(x), int(y), key)
+            painter.setFont(QFont("Courier New", _pt(0.012)))
+            painter.setPen(QColor(val_color))
+            painter.drawText(int(x + W * 0.135), int(y), val)
+
+        hline(H * 0.08)
+
+        # ── identification + session summary (two columns) ────────────
+        col1_x = margin
+        col2_x = W * 0.52
+        row_h  = H * 0.030
+        y0     = H * 0.105
+
+        prof   = self._active_profile or {}
+        inj_id = self.inj_id_edit.text().strip() or "—"
+        brand  = prof.get("brand", "—")
+        model  = prof.get("model", "—")
+        engine = prof.get("engine", "") or "—"
+        itype  = prof.get("type", "") or "—"
+
+        section(col1_x, y0, "INJECTOR IDENTIFICATION")
+        draw_kv(col1_x, y0 + row_h * 1, "INJECTOR ID", inj_id, val_color=PH_CYAN)
+        draw_kv(col1_x, y0 + row_h * 2, "BRAND",       brand)
+        draw_kv(col1_x, y0 + row_h * 3, "MODEL",       model)
+        draw_kv(col1_x, y0 + row_h * 4, "TYPE",        itype)
+        draw_kv(col1_x, y0 + row_h * 5, "ENGINE",      engine)
+
+        # Session summary (real time-series stats)
+        h_el = self._session_elapsed // 3600
+        m_el = (self._session_elapsed % 3600) // 60
+        s_el = self._session_elapsed % 60
+        dur_txt = f"{h_el:02d}:{m_el:02d}:{s_el:02d}"
+        min_p   = self._min_pressure if self._min_pressure is not None else 0.0
+
+        section(col2_x, y0, "SESSION SUMMARY", PH_AMBER)
+        draw_kv(col2_x, y0 + row_h * 1, "DURATION",   dur_txt)
+        draw_kv(col2_x, y0 + row_h * 2, "TEST MODE",  self._active_mode, val_color=PH_BLUE)
+        draw_kv(col2_x, y0 + row_h * 3, "TOTAL PULSES", f"{self.total_pulses:,}")
+        draw_kv(col2_x, y0 + row_h * 4, "PRESSURE",
+                f"peak {self._max_pressure:.0f}  avg {self._avg_pressure():.0f} BAR",
+                val_color=PH_AMBER)
+        draw_kv(col2_x, y0 + row_h * 5, "RPM",
+                f"peak {self._max_rpm}  avg {self._avg_rpm()}",
+                val_color=PH_PURPLE)
+
+        y_after_info = y0 + row_h * 6 + H * 0.005
+        hline(y_after_info)
+
+        # ── CALIBRATION RESULTS table ─────────────────────────────────
+        ytab = y_after_info + H * 0.030
+        section(margin, ytab, "CALIBRATION RESULTS  —  DELIVERY SPEC", PH_GREEN)
+
+        # column layout (fractions of usable width)
+        usable = W - margin * 2
+        cols   = ["TEST MODE", "TARGET", "MIN", "MAX", "ACTUAL", "RESULT"]
+        cfrac  = [0.30, 0.14, 0.12, 0.12, 0.14, 0.18]
+        cx     = []
+        acc    = margin
+        for fr in cfrac:
+            cx.append(acc)
+            acc += usable * fr
+
+        # header row
+        hdr_y = ytab + H * 0.028
+        painter.fillRect(int(margin), int(hdr_y - H * 0.018),
+                         int(usable), int(H * 0.024), QColor(HEADER))
+        painter.setFont(QFont("Arial", _pt(0.0085), QFont.Weight.Bold))
+        painter.setPen(QColor(TXT_DIM))
+        for i, c in enumerate(cols):
+            painter.drawText(int(cx[i] + W * 0.005), int(hdr_y), c)
+
+        # data rows pulled from the calibration table widget
+        t        = self._calib_table
+        rh       = H * 0.030
+        ry       = hdr_y + H * 0.006
+        n_pass   = 0
+        n_fail   = 0
+        n_tested = 0
+
+        def cell_txt(row, col):
+            it = t.item(row, col)
+            return it.text().strip() if it and it.text() else "—"
+
+        for r in range(t.rowCount()):
+            ry += rh
+            mode   = cell_txt(r, 0)
+            target = cell_txt(r, 4)
+            cmin   = cell_txt(r, 5)
+            cmax   = cell_txt(r, 6)
+            actual = cell_txt(r, 8)
+            status = cell_txt(r, 9)
+
+            # zebra background
+            if r % 2 == 0:
+                painter.fillRect(int(margin), int(ry - H * 0.020),
+                                 int(usable), int(rh), QColor(PANEL))
+
+            painter.setFont(QFont("Courier New", _pt(0.0105), QFont.Weight.Bold))
+            painter.setPen(QColor(PH_CYAN))
+            painter.drawText(int(cx[0] + W * 0.005), int(ry), mode)
+
+            painter.setFont(QFont("Courier New", _pt(0.0105)))
+            painter.setPen(QColor(TXT_PRI))
+            painter.drawText(int(cx[1] + W * 0.005), int(ry), target)
+            painter.drawText(int(cx[2] + W * 0.005), int(ry), cmin)
+            painter.drawText(int(cx[3] + W * 0.005), int(ry), cmax)
+
+            # actual + result
+            has_actual = actual not in ("—", "")
+            painter.setPen(QColor(PH_BLUE if has_actual else TXT_DIM))
+            painter.drawText(int(cx[4] + W * 0.005), int(ry),
+                             actual if has_actual else "—")
+
+            if "PASS" in status:
+                res_c, res_t = PH_GREEN, "PASS"; n_pass += 1; n_tested += 1
+            elif "FAIL" in status:
+                res_c, res_t = PH_RED, "FAIL"; n_fail += 1; n_tested += 1
+            else:
+                res_c, res_t = TXT_DIM, "— not tested"
+            painter.setFont(QFont("Courier New", _pt(0.0105), QFont.Weight.Bold))
+            painter.setPen(QColor(res_c))
+            painter.drawText(int(cx[5] + W * 0.005), int(ry), res_t)
+
+        # overall verdict
+        ry += rh * 1.2
+        if n_tested == 0:
+            verdict_c, verdict = TXT_DIM, "NO MEASUREMENTS ENTERED"
+        elif n_fail == 0:
+            verdict_c, verdict = PH_GREEN, f"OVERALL: PASS   ({n_pass}/{n_tested} modes)"
+        else:
+            verdict_c, verdict = PH_RED, f"OVERALL: FAIL   ({n_fail} of {n_tested} modes out of spec)"
+        painter.setFont(QFont("Arial", _pt(0.012), QFont.Weight.Bold))
+        painter.setPen(QColor(verdict_c))
+        painter.drawText(int(margin), int(ry), verdict)
+
+        # ── waveform snapshots (all 3) ────────────────────────────────
+        ywav = ry + H * 0.025
+        hline(ywav)
+        section(margin, ywav + H * 0.028, "WAVEFORM SNAPSHOT", TXT_DIM)
+
+        graphs   = [(self.glw_p, "PRESSURE", G_AMBER),
+                    (self.glw_i, "INJECTION", G_GREEN),
+                    (self.glw_c, "CAM", G_BLUE)]
+        gw       = (usable - W * 0.02) / 3.0
+        gy       = ywav + H * 0.040
+        gh       = H * 0.075
+        painter.setFont(QFont("Arial", _pt(0.008), QFont.Weight.Bold))
+        for i, (glw, lbl, clr) in enumerate(graphs):
+            gx  = margin + i * (gw + W * 0.01)
+            # Fill the box exactly (scope strips are wide & short) + border
+            pm  = glw.grab().scaled(
+                int(gw), int(gh),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            painter.drawPixmap(int(gx), int(gy), pm)
+            painter.setPen(QColor(BORDER2))
+            painter.drawRect(int(gx), int(gy), int(gw), int(gh))
+            painter.setPen(QColor(clr))
+            painter.drawText(int(gx), int(gy + gh + H * 0.020), lbl)
+
+        # ── signature line ────────────────────────────────────────────
+        ysig = gy + gh + H * 0.05
+        painter.setPen(QColor(BORDER2))
+        painter.drawLine(int(margin), int(ysig), int(margin + W * 0.30), int(ysig))
+        painter.drawLine(int(W - margin - W * 0.30), int(ysig),
+                         int(W - margin), int(ysig))
+        painter.setFont(QFont("Arial", _pt(0.0085)))
+        painter.setPen(QColor(TXT_DIM))
+        painter.drawText(int(margin), int(ysig + H * 0.018), "Technician signature")
+        painter.drawText(int(W - margin - W * 0.30), int(ysig + H * 0.018),
+                         "Date / Stamp")
+
+        # ── footer ────────────────────────────────────────────────────
+        painter.setPen(QColor(TXT_DIM))
+        painter.setFont(QFont("Arial", _pt(0.009)))
+        painter.drawText(int(margin), int(H * 0.97),
+                         "INJECTOR PRO  ·  Diesel Injection Test System")
+        painter.drawText(int(W - margin - W * 0.1), int(H * 0.97), "Page 1 / 1")
+
+        painter.end()
+        QMessageBox.information(self, "Report Saved",
+                                f"PDF report saved to:\n{path}")
+
+    # ──────────────────────────────────────────────────────────────────
+    #  FEATURE 3 — Freeze / Unfreeze Graph Display
+    # ──────────────────────────────────────────────────────────────────
+    def _toggle_freeze(self, checked: bool):
+        self._display_frozen = checked
+        if checked:
+            self._freeze_status.setText("  FROZEN")
+            self._freeze_status.setStyleSheet(
+                f"color:{PH_AMBER}; font-size:10px; font-family:monospace;")
+        else:
+            self._freeze_status.setText("  LIVE")
+            self._freeze_status.setStyleSheet(
+                f"color:{PH_GREEN}; font-size:10px; font-family:monospace;")
+            # Force immediate redraw on unfreeze
+            self._graph_dirty = True
+
+    # ──────────────────────────────────────────────────────────────────
+    #  FEATURE 4 — Visual Safety Alarms (blink timer)
+    # ──────────────────────────────────────────────────────────────────
+    def _check_alarms(self):
+        self._p_alarm = (self._snap_p >= PRESSURE_WARN)
+        self._r_alarm = (self._snap_r >= RPM_WARN)
+
+    def _blink_tick(self):
+        self._blink_state = not self._blink_state
+        bg  = PANEL    if self._dark_mode else "#FFFFFF"
+        bdr = BORDER2  if self._dark_mode else "#D1D1D6"
+
+        if self._p_alarm:
+            color  = PH_RED if self._snap_p >= PRESSURE_ALARM else PH_AMBER
+            border = color if self._blink_state else bdr
+            bw     = "2px" if self._blink_state else "1px"
+            self.frame_p.setStyleSheet(
+                f"background:{bg}; border:{bw} solid {border}; border-radius:6px;")
+        else:
+            self.frame_p.setStyleSheet(
+                f"background:{bg}; border:1px solid {bdr}; border-radius:6px;")
+
+        if self._r_alarm:
+            color  = PH_RED if self._snap_r >= RPM_ALARM else PH_AMBER
+            border = color if self._blink_state else bdr
+            bw     = "2px" if self._blink_state else "1px"
+            self.frame_r.setStyleSheet(
+                f"background:{bg}; border:{bw} solid {border}; border-radius:6px;")
+        else:
+            self.frame_r.setStyleSheet(
+                f"background:{bg}; border:1px solid {bdr}; border-radius:6px;")
+
+    # ──────────────────────────────────────────────────────────────────
+    #  FEATURE 5 — Light / Dark Theme Toggle
+    # ──────────────────────────────────────────────────────────────────
+    def _toggle_theme(self):
+        self._dark_mode = not self._dark_mode
+        dk = self._dark_mode
+        self.setStyleSheet(STYLE_DARK if dk else STYLE_LIGHT)
+        self.theme_btn.setText("LIGHT MODE" if dk else "DARK MODE")
+
+        # Swap the application palette so Fusion matches the active theme
+        app = QApplication.instance()
+        if dk:
+            p = QPalette()
+            p.setColor(QPalette.ColorRole.Window,         QColor(BG))
+            p.setColor(QPalette.ColorRole.WindowText,      QColor(TXT_PRI))
+            p.setColor(QPalette.ColorRole.Base,            QColor(PANEL))
+            p.setColor(QPalette.ColorRole.AlternateBase,   QColor(BORDER))
+            p.setColor(QPalette.ColorRole.Text,            QColor(TXT_PRI))
+            p.setColor(QPalette.ColorRole.Button,          QColor(BORDER))
+            p.setColor(QPalette.ColorRole.ButtonText,      QColor(TXT_PRI))
+            p.setColor(QPalette.ColorRole.Highlight,       QColor(PH_BLUE))
+            p.setColor(QPalette.ColorRole.HighlightedText, QColor('#FFFFFF'))
+            p.setColor(QPalette.ColorGroup.Disabled,
+                       QPalette.ColorRole.WindowText,      QColor(TXT_DIM))
+            p.setColor(QPalette.ColorGroup.Disabled,
+                       QPalette.ColorRole.Text,            QColor(TXT_DIM))
+            app.setPalette(p)
+        else:
+            p = QPalette()
+            p.setColor(QPalette.ColorRole.Window,         QColor('#F2F2F7'))
+            p.setColor(QPalette.ColorRole.WindowText,      QColor('#1C1C1E'))
+            p.setColor(QPalette.ColorRole.Base,            QColor('#FFFFFF'))
+            p.setColor(QPalette.ColorRole.AlternateBase,   QColor('#E5E5EA'))
+            p.setColor(QPalette.ColorRole.Text,            QColor('#1C1C1E'))
+            p.setColor(QPalette.ColorRole.Button,          QColor('#E5E5EA'))
+            p.setColor(QPalette.ColorRole.ButtonText,      QColor('#1C1C1E'))
+            p.setColor(QPalette.ColorRole.Highlight,       QColor('#0A84FF'))
+            p.setColor(QPalette.ColorRole.HighlightedText, QColor('#FFFFFF'))
+            app.setPalette(p)
+
+        self._apply_theme_widgets()
+
+    def _apply_theme_widgets(self):
+        dk = self._dark_mode
+
+        # ── button text reflects current mode ─────────────────────────
+        self.theme_btn.setText("LIGHT MODE" if dk else "DARK MODE")
+
+        # ── header bar ────────────────────────────────────────────────
+        if dk:
+            self._header_bar.setStyleSheet(
+                f"background:{HEADER}; border-bottom:1px solid {BORDER2};")
+        else:
+            self._header_bar.setStyleSheet(
+                "background:#FFFFFF; border-bottom:1px solid #E0E0E6;")
+
+        # ── theme toggle button ───────────────────────────────────────
+        if dk:
+            self.theme_btn.setStyleSheet(f"""
+                QPushButton       {{background:{BORDER};color:{TXT_SEC};
+                                    border:1px solid {BORDER2};border-radius:6px;
+                                    font-size:10px;padding:0 10px;font-weight:500;}}
+                QPushButton:hover {{background:{BORDER2};color:{TXT_PRI};border-color:{PH_BLUE};}}
+                QPushButton:pressed {{background:{BG};color:{TXT_PRI};}}
+            """)
+        else:
+            self.theme_btn.setStyleSheet("""
+                QPushButton       {background:#E5E5EA;color:#3C3C43;
+                                    border:1px solid #C7C7CC;border-radius:6px;
+                                    font-size:10px;padding:0 10px;font-weight:500;}
+                QPushButton:hover {background:#D1D1D6;color:#1C1C1E;border-color:#0A84FF;}
+                QPushButton:pressed {background:#AEAEB2;color:#1C1C1E;}
+            """)
+
+        # ── START button ──────────────────────────────────────────────
+        if dk:
+            self.start_btn.setStyleSheet(f"""
+                QPushButton         {{background:#0A2218;color:{PH_GREEN};
+                                      border:1px solid #163C28;border-radius:7px;font-weight:600;}}
+                QPushButton:hover   {{background:#163C28;border-color:{PH_GREEN};}}
+                QPushButton:pressed {{background:#061009;}}
+            """)
+        else:
+            self.start_btn.setStyleSheet("""
+                QPushButton         {background:#D4F5E2;color:#1A6B3A;
+                                      border:1px solid #A8DFC0;border-radius:7px;font-weight:600;}
+                QPushButton:hover   {background:#A8DFC0;border-color:#30D158;}
+                QPushButton:pressed {background:#7DC49A;}
+            """)
+
+        # ── STOP button ───────────────────────────────────────────────
+        if dk:
+            self.stop_btn.setStyleSheet(f"""
+                QPushButton         {{background:#2A1010;color:{PH_RED};
+                                      border:1px solid #44181A;border-radius:7px;font-weight:600;}}
+                QPushButton:hover   {{background:#44181A;border-color:{PH_RED};}}
+                QPushButton:pressed {{background:#100506;}}
+            """)
+        else:
+            self.stop_btn.setStyleSheet("""
+                QPushButton         {background:#FFE5E3;color:#C0281E;
+                                      border:1px solid #FFBBBA;border-radius:7px;font-weight:600;}
+                QPushButton:hover   {background:#FFBBBA;border-color:#FF453A;}
+                QPushButton:pressed {background:#FFAAAA;}
+            """)
+
+        # ── SYNC button ───────────────────────────────────────────────
+        if dk:
+            self.sync_btn.setStyleSheet(f"""
+                QPushButton       {{background:#081428;color:{PH_BLUE};
+                                    border:1px solid #102248;border-radius:7px;font-size:11px;font-weight:500;}}
+                QPushButton:hover {{background:#102248;color:{TXT_PRI};border-color:{PH_BLUE};}}
+                QPushButton:pressed {{background:#050C18;color:{TXT_PRI};}}
+            """)
+        else:
+            self.sync_btn.setStyleSheet("""
+                QPushButton       {background:#E5F0FF;color:#0A5CC7;
+                                    border:1px solid #B8D4FF;border-radius:7px;font-size:11px;font-weight:500;}
+                QPushButton:hover {background:#B8D4FF;color:#063A8A;border-color:#0A84FF;}
+                QPushButton:pressed {background:#98C0F5;}
+            """)
+
+        # ── SAVE REPORT button ────────────────────────────────────────
+        if dk:
+            self.report_btn.setStyleSheet(f"""
+                QPushButton       {{background:#081A12;color:{PH_GREEN};
+                                    border:1px solid #102C1E;border-radius:7px;font-size:11px;font-weight:500;}}
+                QPushButton:hover {{background:#102C1E;color:{TXT_PRI};border-color:{PH_GREEN};}}
+                QPushButton:pressed {{background:#040D09;color:{TXT_PRI};}}
+            """)
+        else:
+            self.report_btn.setStyleSheet("""
+                QPushButton       {background:#D4F5E2;color:#1A6B3A;
+                                    border:1px solid #A8DFC0;border-radius:7px;font-size:11px;font-weight:500;}
+                QPushButton:hover {background:#A8DFC0;color:#0F4A28;border-color:#30D158;}
+                QPushButton:pressed {background:#7DC49A;}
+            """)
+
+        # ── CSV button ───────────────────────────────────────────────
+        if dk:
+            self.csv_btn.setStyleSheet(f"""
+                QPushButton       {{background:#0A1820;color:{PH_CYAN};
+                                    border:1px solid #122838;border-radius:7px;font-size:11px;font-weight:500;}}
+                QPushButton:hover {{background:#122838;color:{TXT_PRI};border-color:{PH_CYAN};}}
+                QPushButton:pressed {{background:#050C10;color:{TXT_PRI};}}
+            """)
+        else:
+            self.csv_btn.setStyleSheet("""
+                QPushButton       {background:#D4F0F5;color:#0A6B7A;
+                                    border:1px solid #A0D8E0;border-radius:7px;font-size:11px;font-weight:500;}
+                QPushButton:hover {background:#A0D8E0;color:#064A56;border-color:#30B0C7;}
+                QPushButton:pressed {background:#70C0CC;}
+            """)
+
+        # ── ZERO button ───────────────────────────────────────────────
+        if dk:
+            self.zero_btn.setStyleSheet(f"""
+                QPushButton       {{background:#1A1008;color:{PH_AMBER};
+                                    border:1px solid #3A2810;border-radius:7px;
+                                    font-size:11px;font-weight:600;}}
+                QPushButton:hover {{background:#2A1A0C;color:{TXT_PRI};border-color:{PH_AMBER};}}
+                QPushButton:pressed {{background:#100800;}}
+            """)
+        else:
+            self.zero_btn.setStyleSheet("""
+                QPushButton       {background:#FFF3D4;color:#7A4800;
+                                    border:1px solid #FFD980;border-radius:7px;
+                                    font-size:11px;font-weight:600;}
+                QPushButton:hover {background:#FFE9A8;color:#4A2A00;border-color:#FF9F0A;}
+                QPushButton:pressed {background:#FFDB8A;}
+            """)
+
+        # ── FREEZE button ─────────────────────────────────────────────
+        if dk:
+            self.freeze_btn.setStyleSheet(f"""
+                QPushButton         {{background:{BORDER};color:{PH_BLUE};
+                                      border:1px solid {BORDER2};border-radius:6px;
+                                      font-size:10px;padding:0 12px;font-weight:500;}}
+                QPushButton:hover   {{background:{BORDER2};color:{TXT_PRI};border-color:{PH_BLUE};}}
+                QPushButton:checked {{background:#241E08;color:{PH_AMBER};border-color:{PH_AMBER};}}
+                QPushButton:checked:hover {{background:#352C0C;border-color:{PH_AMBER};}}
+            """)
+        else:
+            self.freeze_btn.setStyleSheet("""
+                QPushButton         {background:#E5F0FF;color:#0A84FF;
+                                      border:1px solid #B8D4FF;border-radius:6px;
+                                      font-size:10px;padding:0 12px;font-weight:500;}
+                QPushButton:hover   {background:#B8D4FF;color:#063A8A;border-color:#0A84FF;}
+                QPushButton:checked {background:#FFF3D4;color:#9A5E00;border-color:#FFDB8A;}
+                QPushButton:checked:hover {background:#FFE9A8;border-color:#FF9F0A;}
+            """)
+
+        # ── meter frames (alarm-border targets) ───────────────────────
+        frame_ss = (f"background:{PANEL}; border:1px solid {BORDER2}; border-radius:6px;"
+                    if dk else
+                    "background:#FFFFFF; border:1px solid #D1D1D6; border-radius:6px;")
+        self.frame_p.setStyleSheet(frame_ss)
+        self.frame_r.setStyleSheet(frame_ss)
+
+        # ── re-apply connection button for current state ───────────────
+        self._style_conn_btn(self.worker.is_running)
+
+        # ── PyQtGraph oscilloscope ─────────────────────────────────────
+        if dk:
+            graph_bg   = BG
+            axis_clr   = BORDER
+            grid_alpha = 0.18
+            axis_txt   = TXT_DIM
+        else:
+            graph_bg   = '#FFFFFF'
+            axis_clr   = '#D1D1D6'
+            grid_alpha = 0.30
+            axis_txt   = '#AEAEB2'
+        for _glw in [self.glw_p, self.glw_i, self.glw_c]:
+            _glw.setBackground(graph_bg)
+
+        # ── _dim() labels and meter frame labels — re-style on toggle ──
+        dim_color   = TXT_DIM  if dk else '#3A3A4A'
+        dim_ss      = (f"color:{dim_color}; font-size:9px; font-weight:bold;"
+                       f" letter-spacing:1px; font-family:monospace;")
+        frame_bg    = PANEL    if dk else '#FFFFFF'
+        frame_bdr   = BORDER2  if dk else '#E0E0E6'
+        frame_ss    = f"background:{frame_bg}; border:1px solid {frame_bdr}; border-radius:6px;"
+
+        for w in self.findChildren(QLabel):
+            ss = w.styleSheet()
+            # update _dim() labels
+            if 'letter-spacing:1px' in ss and 'font-size:9px' in ss:
+                w.setStyleSheet(dim_ss)
+            # update meter title labels (letter-spacing:2px, no border-color logic)
+            elif 'letter-spacing:2px' in ss and 'font-family:monospace' in ss and 'border:none' in ss:
+                # extract the color from existing style and rebuild with correct alpha
+                for acc in [PH_PURPLE, PH_AMBER, PH_GREEN, PH_BLUE]:
+                    if acc[:7].lower() in ss.lower():
+                        new_c = acc if not dk else f"{acc}50"
+                        w.setStyleSheet(
+                            f"color:{new_c}; font-size:9px; font-weight:bold;"
+                            f" letter-spacing:2px; font-family:monospace; border:none;")
+                        break
+            # update unit labels (no letter-spacing, has border:none)
+            elif 'font-size:10px' in ss and 'font-family:monospace' in ss and 'border:none' in ss:
+                for acc in [PH_PURPLE, PH_AMBER, PH_GREEN, PH_BLUE]:
+                    if acc[:7].lower() in ss.lower():
+                        new_c = f"{acc}CC" if not dk else f"{acc}60"
+                        w.setStyleSheet(
+                            f"color:{new_c}; font-size:10px; font-family:monospace; border:none;")
+                        break
+
+        # re-apply meter frame backgrounds (ALL boxes, not just R & P)
+        for frame in [self.frame_r, self.frame_p, self.frame_a,
+                      self.frame_inj, self.frame_engine]:
+            frame.setStyleSheet(frame_ss)
+
+        # ── LCD digit displays — dark glass in dark mode, white in light ─
+        lcd_bg     = G_BG      if dk else '#FFFFFF'
+        lcd_border = '28'      if dk else '55'   # alpha on accent border
+        for lcd, accent in [(self.lcd_r, PH_PURPLE), (self.lcd_p, PH_AMBER),
+                            (self.lcd_a, PH_BLUE)]:
+            lcd.setStyleSheet(
+                f"QLCDNumber{{color:{accent}; background:{lcd_bg};"
+                f" border:1px solid {accent}{lcd_border}; border-radius:4px;}}")
+
+        # ── INJ PULSE LED off-state — light tint in light mode ──────────
+        if dk:
+            self._led_off_style = ("background:#0A1A0D; border-radius:10px;"
+                                   " border:2px solid #1A3A20;")
+        else:
+            self._led_off_style = ("background:#E8F5EC; border-radius:10px;"
+                                   " border:2px solid #BFE5CC;")
+        if not self._led_timer.isActive():       # don't override an active flash
+            self.inj_led.setStyleSheet(self._led_off_style)
+
+        # ── Auto-Reconnect checkbox — keep label readable in both modes ──
+        cb_color = TXT_SEC if dk else '#3A3A4A'
+        self.autoreconn_cb.setStyleSheet(
+            f"color:{cb_color}; font-size:10px;")
+
+        # ── Cylinder gauges — repaint with theme colors ────────────────
+        if hasattr(self, '_cylinders'):
+            for cg in self._cylinders.values():
+                cg.set_dark(dk)
+
+        # ── Coil boxes — re-tint frames, name fields and buttons ───────
+        if hasattr(self, '_coil_frames'):
+            for i in range(COIL_COUNT):
+                self._style_coil_row(i)
+
+        # ── Relay button — re-tint for the current theme ───────────────
+        if hasattr(self, 'relay_btn'):
+            self._style_relay_btn()
+
+        # ── Calibration table — swap dark/light palette ────────────────
+        if hasattr(self, '_calib_table'):
+            self._calib_table.setStyleSheet(self._calib_table_style(dk))
+            # re-tint row backgrounds for current theme
+            self._populate_calib_table(self._active_profile)
+
+    # ── actions ───────────────────────────────────────────────────────
+    def _send_validated(self, cmd: str):
+        """Send a command through the safety validator, then to ESP32."""
+        ok   = True
+        warn = ""
+        if cmd.startswith("w"):
+            ok, val, warn = self._safety.validate_pulse(int(cmd[1:]))
+            cmd = f"w{val}"
+        elif cmd.startswith("f"):
+            ok, val, warn = self._safety.validate_freq(int(cmd[1:]))
+            cmd = f"f{val}"
+        elif cmd.startswith("a"):
+            ok, val, warn = self._safety.validate_delay(int(cmd[1:]))
+            cmd = f"a{val}"
+        if warn:
+            self._comm_log(f"⚠  {warn}", PH_AMBER)
+        self._comm_log(f"TX  {cmd}", PH_BLUE)
+        self.worker.send_command(cmd)
+
+    def _on_start(self):
+        # Re-sync params through validator before start
+        self._send_validated(f"w{self.pw_sp.value()}")
+        self._send_validated(f"f{self.fr_sp.value()}")
+        self._send_validated(f"a{self.an_sp.value()}")
+        self.worker.send_command("start")
+        self._comm_log("▶  START", PH_GREEN)
+        self.graph_paused     = False
+        self._session_start   = datetime.datetime.now()
+        self._session_elapsed = 0
+        # ── reset session statistics ──────────────────────────────────
+        self._max_pressure    = 0.0
+        self._min_pressure    = None
+        self._sum_pressure    = 0.0
+        self._cnt_pressure    = 0
+        self._sum_rpm         = 0.0
+        self._cnt_rpm         = 0
+        self._max_rpm         = 0
+        self.total_pulses     = 0
+        self.run_lbl.setText("RUNNING")
+        self.run_lbl.setStyleSheet(
+            f"color:{PH_GREEN}; font-family:monospace; border:none;")
+        self.hdr_timer.setStyleSheet(
+            f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
+
+    def _on_stop(self):
+        self.worker.send_command("stop")
+        self._comm_log("■  STOP", PH_RED)
+        self.graph_paused   = True
+        # Auto-log session
+        self._log_session()
+        self._session_start = None
+        self.run_lbl.setText("STOPPED")
+        self.run_lbl.setStyleSheet(
+            f"color:{PH_RED}; font-family:monospace; border:none;")
+        self.hdr_timer.setStyleSheet(
+            f"color:{TXT_DIM}; font-size:11px; font-family:monospace;")
+
+    def _avg_pressure(self) -> float:
+        return self._sum_pressure / self._cnt_pressure if self._cnt_pressure else 0.0
+
+    def _avg_rpm(self) -> int:
+        return round(self._sum_rpm / self._cnt_rpm) if self._cnt_rpm else 0
+
+    def _log_session(self):
+        """Auto-save session to CSV log."""
+        p = self._active_profile or {}
+        row = {
+            "timestamp":       datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "injector_id":     self.inj_id_edit.text().strip() or "—",
+            "brand":           p.get("brand", "—"),
+            "model":           p.get("model", "—"),
+            "mode":            self._active_mode,
+            "pulse_us":        self.pw_sp.value(),
+            "freq_hz":         self.fr_sp.value(),
+            "delay_deg":       self.an_sp.value(),
+            "duration_s":      self._session_elapsed,
+            "total_pulses":    self.total_pulses,
+            "max_pressure_bar":f"{self._max_pressure:.1f}",
+            "avg_pkt_s":       self._pkt_rate,
+        }
+        self._session_logger.log(row)
+
+    # ── Session 1Hz tick ──────────────────────────────────────────────
+    def _session_tick(self):
+        if self._session_start is not None:
+            self._session_elapsed = int(
+                (datetime.datetime.now() - self._session_start).total_seconds())
+            h = self._session_elapsed // 3600
+            m = (self._session_elapsed % 3600) // 60
+            s = self._session_elapsed % 60
+            self.hdr_timer.setText(f"⏱  {h:02d}:{m:02d}:{s:02d}")
+            # Auto-stop
+            if self._auto_stop_secs > 0 and self._session_elapsed >= self._auto_stop_secs:
+                self._on_stop()
+        else:
+            self.hdr_timer.setText("⏱  00:00:00")
+
+    # ── Watchdog — stale data detection ──────────────────────────────
+    def _watchdog_tick(self):
+        if not self.worker.is_running:
+            return
+        age = time.time() - self._last_data_time
+        if self._last_data_time > 0 and age > 3.0:
+            if not self._watchdog_stale:
+                self._watchdog_stale = True
+                self.hdr_conn.setText("⚠  NO DATA")
+                self.hdr_conn.setStyleSheet(
+                    f"color:{PH_AMBER}; font-size:11px; font-family:monospace;")
+        else:
+            if self._watchdog_stale:
+                self._watchdog_stale = False
+                port = self.port_combo.currentText()
+                self.hdr_conn.setText(f"●  {port}  CONNECTED")
+                self.hdr_conn.setStyleSheet(
+                    f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
+
+    # ── Auto-reconnect ────────────────────────────────────────────────
+    def _try_reconnect(self):
+        if self._auto_reconnect and not self.worker.is_running:
+            self.worker.reconnect()
+
+    # ── Packet rate from worker ───────────────────────────────────────
+    def _on_pkt_tick(self, pps):
+        self._pkt_rate = pps
+        color = PH_GREEN if pps >= 80 else PH_AMBER if pps >= 30 else PH_RED
+        self.hdr_pkt.setText(f"PKT: {pps}/s")
+        self.hdr_pkt.setStyleSheet(
+            f"color:{color}; font-size:11px; font-family:monospace;")
+
+    # ── Export CSV ────────────────────────────────────────────────────
+    def _export_csv(self):
+        import csv, os
+        ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        inj = self.inj_id_edit.text().strip() or "unknown"
+        default = os.path.expanduser(f"~/Desktop/INJ_{inj}_{ts}.csv")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV", default, "CSV Files (*.csv)")
+        if not path:
+            return
+        preset = self.preset_combo.currentText()
+        mode   = "CamBox" if self._mode_id == 1 else "Custom"
+        try:
+            with open(path, 'w', newline='', encoding='utf-8') as f:
+                w = csv.writer(f)
+                w.writerow(["INJECTOR PRO — Test Session Export"])
+                w.writerow(["Timestamp",      ts])
+                w.writerow(["Injector ID",    inj])
+                w.writerow(["Preset",         preset])
+                w.writerow(["Mode",           mode])
+                w.writerow(["Pulse Width µs", self.pw_sp.value()])
+                w.writerow(["Frequency Hz",   self.fr_sp.value()])
+                w.writerow(["Delay Angle °",  self.an_sp.value()])
+                w.writerow(["Total Pulses",   self.total_pulses])
+                w.writerow(["Session s",      self._session_elapsed])
+                w.writerow(["Avg PKT/s",      self._pkt_rate])
+                w.writerow([])
+                w.writerow(["Session Statistics", "Min", "Avg", "Max", "Unit"])
+                _minp = self._min_pressure if self._min_pressure is not None else 0.0
+                w.writerow(["Pressure", f"{_minp:.1f}",
+                            f"{self._avg_pressure():.1f}",
+                            f"{self._max_pressure:.1f}", "BAR"])
+                w.writerow(["RPM", "—", self._avg_rpm(), self._max_rpm, "RPM"])
+                w.writerow([])
+                w.writerow(["Live Reading (at export)", "Value", "Unit"])
+                w.writerow(["Pressure",  f"{self._snap_p:.1f}", "BAR"])
+                w.writerow(["RPM",       self._snap_r,          "RPM"])
+                w.writerow(["Inj Rate",  f"{self._snap_i:.1f}", "inj/s"])
+            QMessageBox.information(self, "Export CSV",
+                f"Saved:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
+
+    def _on_mode(self, mid):
+        self.worker.send_command("mode")
+        self._mode_id = mid
+        self._cam_visible(mid == 1)
+        if mid == 0:
+            # Custom mode: lock RPM to zero + clear all buffers
+            self._rpm_ema = 0.0
+            self._snap_r  = 0
+            self._rpm_win.clear()
+            self._inj_win.clear()
+            self.cam_buf  = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
+            self.mode_lbl.setText("COMMON RAIL")
+            self.mode_lbl.setStyleSheet(
+                f"color:{PH_BLUE}; font-size:11px; font-family:monospace;"
+                f" letter-spacing:1px; border:none;")
+            self.hdr_mode.setText("  COMMON RAIL")
+            self.hdr_mode.setStyleSheet(
+                f"color:{PH_BLUE}; font-size:11px; font-family:monospace;")
+        else:
+            self.mode_lbl.setText("CAMBOX")
+            self.mode_lbl.setStyleSheet(
+                f"color:{PH_PURPLE}; font-size:11px; font-family:monospace;"
+                f" letter-spacing:1px; border:none;")
+            self.hdr_mode.setText("  CAMBOX MODE")
+            self.hdr_mode.setStyleSheet(
+                f"color:{PH_PURPLE}; font-size:11px; font-family:monospace;")
+
+    def _on_rpm_divisor(self, val):
+        self._rpm_divisor = val
+
+    def _refresh_ports(self):
+        if not self.worker.is_running:
+            ports = [p.device for p in serial.tools.list_ports.comports()]
+            cur   = self.port_combo.currentText()
+            self.port_combo.blockSignals(True)
+            self.port_combo.clear()
+            self.port_combo.addItems(ports)
+            if cur in ports:
+                self.port_combo.setCurrentText(cur)
+            self.port_combo.blockSignals(False)
+
+    def _toggle_conn(self):
+        if not self.worker.is_running:
+            port = self.port_combo.currentText()
+            baud = int(self.baud_combo.currentText())
+            if port:
+                self.worker.connect_device(port, baud)
+            else:
+                QMessageBox.warning(self, "No Port", "No COM ports found.")
+        else:
+            self.worker.disconnect_device()
+
+    def _set_pressure_zero(self):
+        """Auto-calibrate zero: snap P_VX4_ZERO_MV to current EMA reading."""
+        if self._p_vx4_ema < 10:
+            QMessageBox.warning(self, "SET ZERO",
+                "No sensor data yet — connect ESP32 first.")
+            return
+        global P_VX4_ZERO_MV
+        P_VX4_ZERO_MV   = round(self._p_vx4_ema, 1)
+        self._p_vx4_ema = 0.0
+        self._snap_p    = 0.0
+        QMessageBox.information(self, "SET ZERO",
+            f"Zero calibrated.\nP_VX4_ZERO_MV = {P_VX4_ZERO_MV:.1f} mV")
+
+    def _sync(self):
+        self._send_validated(f"w{self.pw_sp.value()}")
+        self._send_validated(f"f{self.fr_sp.value()}")
+        self._send_validated(f"a{self.an_sp.value()}")
+        self.worker.send_command("COILS")     # re-read the board's coil mask
+        self.worker.send_command("RELAY")     # re-read the board's relay state
+        self._comm_log("↺  SYNC", PH_CYAN)
+
+    def _on_conn(self, ok):
+        self._style_conn_btn(ok)
+        if ok:
+            self.conn_btn.setText("DISCONNECT")
+            self.conn_lbl.setText("●  CONNECTED")
+            self.conn_lbl.setStyleSheet(
+                f"color:{PH_GREEN}; font-weight:bold; font-size:11px; font-family:monospace;")
+            port = self.port_combo.currentText()
+            self.hdr_conn.setText(f"●  {port}  CONNECTED")
+            self.hdr_conn.setStyleSheet(
+                f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
+            # Sync coil mask + relay state in case the board is already running.
+            self.worker.send_command("COILS")
+            self.worker.send_command("RELAY")
+        else:
+            self.conn_btn.setText("CONNECT")
+            self.conn_lbl.setText("●  DISCONNECTED")
+            self.conn_lbl.setStyleSheet(
+                f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
+            self.hdr_conn.setText("●  DISCONNECTED")
+            self.hdr_conn.setStyleSheet(
+                f"color:{PH_RED}; font-size:11px; font-family:monospace;")
+            self._p_vx4_ema    = 0.0
+            self._p_graph      = 0.0
+            self._p_ema_raw    = 0.0
+            self._pressure_ema = 0.0
+            self._rpm_ema      = 0.0
+            self._rpm_win      = deque(maxlen=25)
+            self._inj_ema      = 0.0
+
+            self._inj_win      = deque(maxlen=20)
+            self._inj_hold     = self._cam_hold = 0
+
+    # ── data parser ───────────────────────────────────────────────────
+    def _on_data(self, raw):
+        if raw.startswith("COILS:"):          # firmware coil enable mask
+            self._apply_coil_mask(raw[6:].strip())
+            return
+        if raw.startswith("RELAY:"):          # firmware Peak-supply relay state
+            self._apply_relay_state(raw[6:])
+            return
+        if raw.startswith("OK:") or raw.startswith("ERR:") or "P:" not in raw:
+            logging.debug(raw)
+            return
+        self._last_data_time = time.time()   # watchdog timestamp
+        if self.graph_paused:
+            return
+        try:
+            p = a = r = i = c = d = 0
+            for part in raw.split(','):
+                k, _, v = part.partition(':')
+                if   k == 'P': p = float(v)
+                elif k == 'A': a = int(v)
+                elif k == 'R': r = int(v)
+                elif k == 'D': d = int(v)
+                elif k == 'I': i = int(v)
+                elif k == 'C': c = int(v)
+
+            # ══════════════════════════════════════════════════════════
+            #  PRESSURE FILTER  (3-stage, EMI-resistant)
+            #
+            #  Stage 1 — Buffer:  keep last 20 raw BAR readings
+            #  Stage 2 — Trim:    drop 2 highest + 2 lowest (outlier removal)
+            #  Stage 3 — EMA:     alpha=0.15 on trimmed mean → smooth & fast
+            #  Stage 4 — Offset + dead-band clamp → final display value
+            # ══════════════════════════════════════════════════════════
+
+            # Custom mode: ESP32 interrupt detached → force R & C to zero
+            if self._mode_id == 0:
+                r = 0
+                c = 0
+
+            # ── Pressure filter (3 steps, EMI-resistant) ──────────────
+            # p = raw VX4 mV from ESP32 (averaged over 256 ADC samples)
+
+            # Step 1a: slow EMA for LCD — warm-start on first reading
+            self._p_ema_raw = p
+            if self._p_vx4_ema == 0.0:                              # warm-start
+                self._p_vx4_ema = p
+            else:
+                self._p_vx4_ema = P_EMA_ALPHA * p + (1.0 - P_EMA_ALPHA) * self._p_vx4_ema
+
+            # Step 1b: fast EMA for graph (shows dynamics)
+            if self._p_graph == 0.0:
+                self._p_graph = p
+            else:
+                self._p_graph = 0.15 * p + 0.85 * self._p_graph
+
+            # Step 2: filtered mV → BAR  (direct slope, 3-point best-fit)
+            #   slope = 2.355 BAR/mV  (regression: 0→112, 260→227, 540→339 mV)
+            #   zero  = 112 mV
+            delta = self._p_vx4_ema - P_VX4_ZERO_MV
+            bar   = max(0.0, delta * P_SLOPE_BAR_MV)
+            bar   = min(bar, P_BAR_MAX_VAL)
+
+            # Step 3: Slew-Rate Limiter (max ±3 BAR/cycle) → Heavy EMA (α=0.01)
+            _prev_bar = getattr(self, '_pressure_ema', None)
+            if _prev_bar is None or _prev_bar == 0.0:               # warm-start: snap immediately
+                self._pressure_ema = bar
+            else:
+                _slew_limit        = 80.0                            # BAR per cycle
+                bar                = max(_prev_bar - _slew_limit,
+                                     min(_prev_bar + _slew_limit, bar))
+                self._pressure_ema = 0.20 * bar + 0.80 * _prev_bar  # fast EMA
+            calibrated             = self._pressure_ema + P_CAL_OFFSET
+            if self._mode_id == 1:                        # CamBox: sensor not connected
+                self._snap_p = 0.0
+            else:
+                self._snap_p = 0.0 if calibrated < P_DEAD_BAND else calibrated
+
+            # ── RPM median window + spike rejection ──────────────────────
+            if self._mode_id == 0:
+                self._rpm_win.clear()
+                self._rpm_ema = 0.0
+            else:
+                if r > 0:
+                    # Spike reject: ignore jumps > 500 RPM from current value
+                    if self._rpm_ema == 0.0 or abs(r - self._rpm_ema) <= 500:
+                        self._rpm_win.append(r)
+                if self._rpm_win:
+                    nz = sorted(self._rpm_win)
+                    self._rpm_ema = float(nz[len(nz) // 2])
+
+            self._inj_win.append(i)
+            win_sec  = len(self._inj_win) * TELEMETRY_MS / 1000
+            self._inj_ema = (sum(self._inj_win) / win_sec) / 2   # ÷2: 2× correction
+
+            _new_r = round(self._rpm_ema / self._rpm_divisor)       # gear correction
+            if abs(_new_r - self._snap_r) > 5:                    # dead-band ±5 RPM
+                self._snap_r = _new_r
+            self._snap_a = a
+            self._snap_i = self._inj_ema
+            self._snap_d = d
+
+            self.total_pulses += i
+
+            # ── INJ LED flash on every pulse ──────────────────────────
+            if i > 0:
+                self.inj_led.setStyleSheet(self._led_on_style)
+                self._led_timer.start()          # auto-off after 80 ms
+                self.inj_rate_lbl.setText(f"{round(self._inj_ema)} inj/s")
+
+            if i > 0: self._inj_hold = 2
+            elif self._inj_hold > 0: self._inj_hold -= 1
+            if c > 0: self._cam_hold = 2
+            elif self._cam_hold > 0: self._cam_hold -= 1
+
+            # Graph uses faster EMA to show dynamics; LCD uses slow EMA
+            # Apply same CAL_OFFSET as LCD so graph and display match
+            graph_bar = max(0.0, (self._p_graph - P_VX4_ZERO_MV) * P_SLOPE_BAR_MV + P_CAL_OFFSET)
+            self.pressure_buf.append(graph_bar)
+            self.inj_buf.append(1.0 if (i > 0 or self._inj_hold > 0) else 0.0)
+            self.cam_buf.append(1.0 if (c > 0 or self._cam_hold > 0) else 0.0)
+            self._graph_dirty = True
+
+            # Track session statistics AFTER computing the new value
+            # (only while a session is actually running)
+            if self._session_start is not None:
+                if self._snap_p > self._max_pressure:
+                    self._max_pressure = self._snap_p
+                if self._snap_p > 0:
+                    if self._min_pressure is None or self._snap_p < self._min_pressure:
+                        self._min_pressure = self._snap_p
+                    self._sum_pressure += self._snap_p
+                    self._cnt_pressure += 1
+                if self._snap_r > 0:
+                    if self._snap_r > self._max_rpm:
+                        self._max_rpm = self._snap_r
+                    self._sum_rpm += self._snap_r
+                    self._cnt_rpm += 1
+
+        except Exception as e:
+            logging.warning(f"Parse [{raw}]: {e}")
+
+    # ── 30fps tick ────────────────────────────────────────────────────
+    def _tick(self):
+        # LCDs
+        self.lcd_p.display(f"{self._snap_p:.0f}")
+        self.lcd_r.display(self._snap_r)
+        self.lcd_a.display(self._snap_a)
+        # lcd_i replaced by LED — rate label updated in _on_data on pulse
+
+        # Header pulse counter
+        self.hdr_pulses.setText(f"PULSES: {self.total_pulses:,}")
+
+
+        # CamBox delay label
+        self._update_delay_label()
+
+        # Feature 4 — check alarms every tick
+        self._check_alarms()
+
+        # Graph — skip if frozen (Feature 3) or paused (STOP)
+        if self._graph_dirty and not self.graph_paused and not self._display_frozen:
+            self._graph_dirty = False
+            self.curve_p.setData(X_DATA, list(self.pressure_buf))
+            self.curve_i.setData(X_STEP, make_step(self.inj_buf))
+            self.curve_c.setData(X_STEP, make_step(self.cam_buf))
+
+    # ── close ─────────────────────────────────────────────────────────
+    def closeEvent(self, event):
+        self._port_timer.stop()
+        self._graph_timer.stop()
+        self._alarm_timer.stop()
+        self._watchdog_timer.stop()
+        self._reconnect_timer.stop()
+        self.worker._keep_running = False
+        self.worker.disconnect_device()
+        self.thread.quit()
+        self.thread.wait(3000)
+        event.accept()
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  SINGLE INSTANCE LOCK
+# ══════════════════════════════════════════════════════════════════════
+_lock_sock = None
+
+def _acquire_lock():
+    global _lock_sock
+    try:
+        _lock_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _lock_sock.bind(('127.0.0.1', 47832))
+        _lock_sock.listen(1)
+        return True
+    except OSError:
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    if not _acquire_lock():
+        QMessageBox.warning(None, "Already Running",
+                            "INJECTOR PRO is already running!")
+        sys.exit(0)
+
+    pg.setConfigOptions(antialias=True, foreground=TXT_SEC)
+    app.setStyle("Fusion")
+
+    # ── Dark system palette — Fusion never falls back to light colors ──
+    _dp = QPalette()
+    _dp.setColor(QPalette.ColorRole.Window,          QColor(BG))
+    _dp.setColor(QPalette.ColorRole.WindowText,       QColor(TXT_PRI))
+    _dp.setColor(QPalette.ColorRole.Base,             QColor(PANEL))
+    _dp.setColor(QPalette.ColorRole.AlternateBase,    QColor(BORDER))
+    _dp.setColor(QPalette.ColorRole.ToolTipBase,      QColor(PANEL))
+    _dp.setColor(QPalette.ColorRole.ToolTipText,      QColor(TXT_PRI))
+    _dp.setColor(QPalette.ColorRole.Text,             QColor(TXT_PRI))
+    _dp.setColor(QPalette.ColorRole.Button,           QColor(BORDER))
+    _dp.setColor(QPalette.ColorRole.ButtonText,       QColor(TXT_PRI))
+    _dp.setColor(QPalette.ColorRole.BrightText,       QColor(PH_RED))
+    _dp.setColor(QPalette.ColorRole.Link,             QColor(PH_BLUE))
+    _dp.setColor(QPalette.ColorRole.Highlight,        QColor(PH_BLUE))
+    _dp.setColor(QPalette.ColorRole.HighlightedText,  QColor('#FFFFFF'))
+    _dp.setColor(QPalette.ColorGroup.Disabled,
+                 QPalette.ColorRole.WindowText,        QColor(TXT_DIM))
+    _dp.setColor(QPalette.ColorGroup.Disabled,
+                 QPalette.ColorRole.Text,              QColor(TXT_DIM))
+    _dp.setColor(QPalette.ColorGroup.Disabled,
+                 QPalette.ColorRole.ButtonText,        QColor(TXT_DIM))
+    app.setPalette(_dp)
+
+    win = DieselDashboard()
+    win.showMaximized()
+    sys.exit(app.exec())

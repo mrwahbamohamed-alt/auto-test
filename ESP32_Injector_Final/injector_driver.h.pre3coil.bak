@@ -1,0 +1,58 @@
+/**
+ * injector_driver.h  —  CamBox Pro (single-coil build)
+ * ---------------------------------------------------------------------------
+ * SINGLE PWM CHANNEL ONLY.
+ *
+ * One coil output (Coil1 / GPIO18) drives the single diesel-pump valve/solenoid
+ * (Metering Valve / SCV / PCV). There are NO other injector channels, and there
+ * is NO LCD or keypad — all control is over the Python serial dashboard.
+ *
+ * Two ways GPIO18 is driven (mode-dependent, never both at once):
+ *   • Peak & Hold pulse  — timed solenoid pulse (CAM / fixed-frequency modes).
+ *   • LEDC PWM duty       — continuous valve drive for closed-loop pressure
+ *                           control (PID) in pump/rail mode.
+ *
+ * Peak & Hold waveform:
+ *   ┌─────peak_us──────┐  soft transition  ┌──── hold (chop) ────┐
+ *   │   100 % HIGH     │  2 × 50 % cycles  │  on_us / (on+off)   │ LOW
+ *
+ * CHOP RATE — FIXED AT 10 kHz (100 µs period). 25 kHz was proven to accumulate
+ * coil current and overheat the solenoid; 10 kHz lets current decay each cycle.
+ * Do not raise it.
+ * ---------------------------------------------------------------------------
+ */
+#pragma once
+
+#include <Arduino.h>
+#include "driver/gpio.h"
+#include "soc/gpio_struct.h"
+
+// ── The ONE coil output + debug pin ──────────────────────────────────
+#define COIL_PIN      18              // Coil1 — the single valve/solenoid (SCV/PCV)
+#define DEBUG_PIN     GPIO_NUM_26     // oscilloscope trigger (free during test)
+
+// ── Pulse-width safety window (total PW) ─────────────────────────────
+#define PH_PW_MIN_US   100UL          // reject total PW below this
+#define PH_PW_MAX_US  5000UL          // reject total PW above this (fault)
+
+// ── Peak & Hold defaults ─────────────────────────────────────────────
+//   Peak : 175 µs at full voltage.  Hold : 10 kHz chop (on + off = 100 µs).
+//   Bosch CRIN (~0.5 Ω): 7 µs ON / 93 µs OFF  → I ≈ 2.1 A  (safe)
+//   Denso CR   (~0.3 Ω): 5 µs ON / 95 µs OFF  → I ≈ 1.8 A  (safe)
+#define PH_PEAK_US_DEF     175UL
+#define PH_HOLD_ON_DEF       7UL      // Bosch startup default
+#define PH_HOLD_OFF_DEF     93UL      // 7 + 93 = 100 µs → 10 kHz
+
+// ── Runtime config — set via SET_PH <peak_us> <hold_on_us> <hold_off_us>
+typedef struct {
+    uint32_t peak_us;      // flat 100 % HIGH peak phase
+    uint32_t hold_on_us;   // chop ON  time
+    uint32_t hold_off_us;  // chop OFF time  (period = on + off = 100 µs @ 10 kHz)
+} peak_hold_config_t;
+
+extern peak_hold_config_t g_ph_config;
+
+// ── API ──────────────────────────────────────────────────────────────
+void coil_pins_init();                          // GPIO18 output LOW + debug pin
+void init_debug_pin();                          // GPIO26 push-pull output, LOW
+void fire_peak_hold(uint32_t total_pw_us, bool mark_debug);  // pulse the single coil

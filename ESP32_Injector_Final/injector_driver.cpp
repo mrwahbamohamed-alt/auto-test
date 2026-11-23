@@ -1,39 +1,41 @@
 /**
- * injector_driver.cpp
- * Peak & Hold driver implementation — MODE_COMMON_RAIL only.
+ * injector_driver.cpp  —  CamBox Pro (3-coil build)
+ * Peak & Hold implementation for Coil1 (GPIO18), Coil2 (GPIO23), Coil3 (GPIO4).
  *
- *  Waveform per pulse:
- *  ┌─────peak_us──────┐  soft transition  ┌──── hold (chop) ────┐
- *  │   100 % HIGH     │  2 × 50 % cycles  │  on_us / period_us  │ LOW
+ * Timing : esp_rom_delay_us() — cycle-accurate, no RTOS overhead.
+ * Safety : portDISABLE_INTERRUPTS() wraps the pulse so chop timing is exact.
+ *          Fault gate rejects PW outside [PH_PW_MIN_US, PH_PW_MAX_US] BEFORE
+ *          masking interrupts. Interrupts are re-enabled between coils, so a
+ *          multi-coil shot is N separate masked windows, not one long one.
  *
- *  Timing : esp_rom_delay_us() — cycle-accurate, no RTOS overhead.
- *  Safety : portDISABLE_INTERRUPTS() wraps the entire pulse.
- *           Fault gate rejects PW > PH_PW_MAX_US before blocking.
+ * Register writes target arduino-esp32 v3.x / IDF 5.x, where GPIO.out_w1ts /
+ * out_w1tc are plain volatile uint32_t (no ".val" member). All coil pins
+ * (18/23/4) and DEBUG_PIN (26) are < 32, so the low registers cover them.
  */
 
 #include "injector_driver.h"
-#include "esp_rom_sys.h"        // esp_rom_delay_us()
+#include "esp_rom_sys.h"          // esp_rom_delay_us()
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// ── Direct GPIO register macros (IDF 5.x / arduino-esp32 v3.x) ───────
-//   out_w1ts / out_w1tc are plain volatile uint32_t — no .val member
-#define INJ_HIGH  GPIO.out_w1ts = (1UL << INJECTOR_PIN)
-#define INJ_LOW   GPIO.out_w1tc = (1UL << INJECTOR_PIN)
-#define DBG_HIGH  GPIO.out_w1ts = (1UL << (uint32_t)DEBUG_PIN)
-#define DBG_LOW   GPIO.out_w1tc = (1UL << (uint32_t)DEBUG_PIN)
+// ── Direct GPIO register macros (pin arg must be 0..31) ──────────────
+#define PIN_HIGH(p)  (GPIO.out_w1ts = (1UL << (uint32_t)(p)))
+#define PIN_LOW(p)   (GPIO.out_w1tc = (1UL << (uint32_t)(p)))
+#define DBG_HIGH     (GPIO.out_w1ts = (1UL << (uint32_t)DEBUG_PIN))
+#define DBG_LOW      (GPIO.out_w1tc = (1UL << (uint32_t)DEBUG_PIN))
 
-// ── Runtime config (default values, override with SET_PH) ─────────────
+// ── Index → GPIO map (index 0..2 == "COIL 1..3" on the wire) ─────────
+const uint32_t COIL_PINS[NUM_COILS] = { COIL1_PIN, COIL2_PIN, COIL3_PIN };
+
+// ── Runtime config (override with SET_PH) ────────────────────────────
 peak_hold_config_t g_ph_config = {
-    .peak_us   = PH_PEAK_US_DEF,
-    .period_us = PH_PERIOD_US_DEF,
-    .on_us     = PH_ON_US_DEF,
+    .peak_us     = PH_PEAK_US_DEF,
+    .hold_on_us  = PH_HOLD_ON_DEF,
+    .hold_off_us = PH_HOLD_OFF_DEF,
 };
 
-bool g_use_peak_hold = false;
-
 // ════════════════════════════════════════════════════════════════════
-//  init_debug_pin — configure GPIO26 as push-pull output, start LOW
+//  init_debug_pin — GPIO26 push-pull output, start LOW
 // ════════════════════════════════════════════════════════════════════
 void init_debug_pin() {
     gpio_config_t cfg = {};
@@ -47,77 +49,89 @@ void init_debug_pin() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  fire_common_rail  —  IRAM_ATTR, full Peak & Hold pulse
-//
-//  Stages (timing counted from pulse start):
-//    0 … peak_us                → 100 % HIGH  (open needle)
-//    peak_us … +2×period        → 50 % duty   (soft transition)
-//    +2×period … total_pw_us    → on/off chop  (hold open)
-//    total_pw_us                → hard LOW     (shutdown)
+//  coil_pins_init — all 3 coil pins push-pull output LOW + debug pin
+//  (GPIO18 is later re-attached to LEDC when PID pressure mode starts.)
+//  Every coil starts LOW: nothing fires on boot until the dashboard
+//  enables a coil and sends start.
 // ════════════════════════════════════════════════════════════════════
-void IRAM_ATTR fire_common_rail(uint32_t total_pw_us) {
+void coil_pins_init() {
+    for (int i = 0; i < NUM_COILS; i++) {
+        gpio_config_t cfg = {};
+        cfg.pin_bit_mask = (1ULL << COIL_PINS[i]);
+        cfg.mode         = GPIO_MODE_OUTPUT;
+        cfg.pull_up_en   = GPIO_PULLUP_DISABLE;
+        cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        cfg.intr_type    = GPIO_INTR_DISABLE;
+        gpio_config(&cfg);
+        gpio_set_level((gpio_num_t)COIL_PINS[i], 0);
+    }
+    init_debug_pin();
+}
 
-    // ── Fault gate — checked BEFORE disabling interrupts ─────────────
+// ════════════════════════════════════════════════════════════════════
+//  fire_peak_hold_pin — full Peak & Hold pulse on one coil
+//
+//  Stages (counted from pulse start):
+//    0 … peak_us                 → 100 % HIGH   (open valve/needle)
+//    peak_us … +2×period         → 50 % duty    (soft transition)
+//    +2×period … total_pw_us     → 10 kHz chop  (hold open)
+//    total_pw_us                 → hard LOW      (shutdown)
+// ════════════════════════════════════════════════════════════════════
+void IRAM_ATTR fire_peak_hold_pin(uint32_t pin, uint32_t total_pw_us, bool mark_debug) {
+
+    // ── Fault gate — before disabling interrupts ─────────────────────
     if (total_pw_us > PH_PW_MAX_US) {
         Serial.printf("FAULT:PW_EXCEEDED:%lu\n", (unsigned long)total_pw_us);
         return;
     }
     if (total_pw_us < PH_PW_MIN_US) return;
 
-    // ── Snapshot config — clamp on_us to keep off_us > 0 ─────────────
+    // ── Snapshot config ──────────────────────────────────────────────
     const uint32_t peak   = g_ph_config.peak_us;
-    const uint32_t period = g_ph_config.period_us;
-    const uint32_t on     = (g_ph_config.on_us < period)
-                              ? g_ph_config.on_us
-                              : (period / 2);
-    const uint32_t off    = period - on;
+    const uint32_t on     = g_ph_config.hold_on_us;
+    const uint32_t off    = g_ph_config.hold_off_us;
+    const uint32_t period = on + off;
     const uint32_t half   = period / 2;
+
+    if (period == 0) return;   // guard against a bad SET_PH
 
     portDISABLE_INTERRUPTS();
 
-    // ── Debug pin HIGH (oscilloscope: marks real pulse start) ─────────
-    DBG_HIGH;
+    if (mark_debug) DBG_HIGH;
 
     // ── Phase 1 : PEAK — 100 % duty for peak_us ──────────────────────
-    INJ_HIGH;
+    PIN_HIGH(pin);
     esp_rom_delay_us(peak);
 
     // ── Soft transition : 2 chop cycles at 50 % duty ─────────────────
-    //    Damps inductive voltage spike at peak → hold boundary.
     for (int t = 0; t < 2; t++) {
-        INJ_LOW;
+        PIN_LOW(pin);
         esp_rom_delay_us(half);
-        INJ_HIGH;
+        PIN_HIGH(pin);
         esp_rom_delay_us(half);
     }
 
-    // ── Phase 2 : HOLD — PWM chopping for remaining PW budget ────────
+    // ── Phase 2 : HOLD — 10 kHz chop for the remaining PW budget ─────
     const uint32_t transition_us = 2UL * period;
     const uint32_t hold_budget   = (total_pw_us > peak + transition_us)
                                     ? (total_pw_us - peak - transition_us)
                                     : 0;
     uint32_t elapsed = 0;
-
-    // Full chop cycles
     while (elapsed + period <= hold_budget) {
-        INJ_HIGH;
+        PIN_HIGH(pin);
         esp_rom_delay_us(on);
-        INJ_LOW;
+        PIN_LOW(pin);
         esp_rom_delay_us(off);
         elapsed += period;
     }
-
-    // Partial last cycle — fire one ON pulse if budget allows
     if ((hold_budget - elapsed) >= on) {
-        INJ_HIGH;
+        PIN_HIGH(pin);
         esp_rom_delay_us(on);
     }
 
-    // ── Hard shutdown — pin hard LOW, no float ────────────────────────
-    INJ_LOW;
-
-    // ── Debug pin LOW (oscilloscope: marks real pulse end) ────────────
-    DBG_LOW;
+    // ── Hard shutdown ────────────────────────────────────────────────
+    PIN_LOW(pin);
+    if (mark_debug) DBG_LOW;
 
     portENABLE_INTERRUPTS();
 }

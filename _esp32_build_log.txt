@@ -1,0 +1,10 @@
+==== ESP32 BUILD Wed 07/29/2026 15:31:10.41 ==== 
+Using CLI: C:\Users\LAPIX\AppData\Local\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe 
+arduino-cli  Version: 1.5.0 Commit: dd407d42d Date: 2026-05-19T14:07:59Z
+ 
+---- COMPILE (fqbn esp32:esp32:esp32) ---- 
+Sketch uses 319659 bytes (24%) of program storage space. Maximum is 1310720 bytes.
+Global variables use 23064 bytes (7%) of dynamic memory, leaving 304616 bytes for local variables. Maximum is 327680 bytes.
+ 
+==== EXIT CODE 0 ==== 
+==== FINISHED 15:32:19.01 ==== 

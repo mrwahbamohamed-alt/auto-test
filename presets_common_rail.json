@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "note": "Common-Rail injector calibration presets. Edit or add new entries by hand or via the dashboard UI (Save As / Update / Delete). Field units are noted in the keys.",
+  "presets": [
+    {
+      "name": "— Empty template —",
+      "modes": {
+        "Idle": {
+          "pressure_bar": null,
+          "freq_hz": null,
+          "pulse_us": null,
+          "duration_s": null,
+          "vol_target": null,
+          "vol_min": null,
+          "vol_max": null,
+          "return_min": null,
+          "return_max": null,
+          "leak_limit_bar": null
+        },
+        "Medium": {
+          "pressure_bar": null,
+          "freq_hz": null,
+          "pulse_us": null,
+          "duration_s": null,
+          "vol_target": null,
+          "vol_min": null,
+          "vol_max": null,
+          "return_min": null,
+          "return_max": null,
+          "leak_limit_bar": null
+        },
+        "Full Load": {
+          "pressure_bar": null,
+          "freq_hz": null,
+          "pulse_us": null,
+          "duration_s": null,
+          "vol_target": null,
+          "vol_min": null,
+          "vol_max": null,
+          "return_min": null,
+          "return_max": null,
+          "leak_limit_bar": null
+        },
+        "CamBox": {
+          "pressure_bar": null,
+          "freq_hz": null,
+          "pulse_us": null,
+          "duration_s": null,
+          "vol_target": null,
+          "vol_min": null,
+          "vol_max": null,
+          "return_min": null,
+          "return_max": null,
+          "leak_limit_bar": null
+        }
+      }
+    },
+    {
+      "name": "Bosch 0445110xxx (CRIN)",
+      "modes": {
+        "Idle": {
+          "pressure_bar": 250,
+          "freq_hz": 350.0,
+          "pulse_us": 1200.0,
+          "duration_s": 60.0,
+          "vol_target": 25.0,
+          "vol_min": 20.0,
+          "vol_max": 30.0,
+          "return_min": 20,
+          "return_max": 60,
+          "leak_limit_bar": null
+        },
+        "Medium": {
+          "pressure_bar": 800,
+          "freq_hz": 500.0,
+          "pulse_us": 1600.0,
+          "duration_s": 60.0,
+          "vol_target": 55.0,
+          "vol_min": 43.0,
+          "vol_max": 67.0,
+          "return_min": 60,
+          "return_max": 120,
+          "leak_limit_bar": null
+        },
+        "Full Load": {
+          "pressure_bar": 1600,
+          "freq_hz": 900.0,
+          "pulse_us": 2700.0,
+          "duration_s": 60.0,
+          "vol_target": 200.0,
+          "vol_min": 180.0,
+          "vol_max": 220.0,
+          "return_min": 90,
+          "return_max": 180,
+          "leak_limit_bar": null
+        },
+        "CamBox": {
+          "pressure_bar": 900,
+          "freq_hz": 700.0,
+          "pulse_us": 2200.0,
+          "duration_s": 60.0,
+          "vol_target": 120.0,
+          "vol_min": 105.0,
+          "vol_max": 135.0,
+          "return_min": 70,
+          "return_max": 140,
+          "leak_limit_bar": null
+        }
+      }
+    },
+    {
+      "name": "Denso 095000-xxxx (HP3)",
+      "modes": {
+        "Idle": {
+          "pressure_bar": 200,
+          "freq_hz": 5,
+          "pulse_us": 280,
+          "duration_s": 30,
+          "vol_target": 6.0,
+          "vol_min": 4.5,
+          "vol_max": 7.5,
+          "return_min": 15,
+          "return_max": 50,
+          "leak_limit_bar": null
+        },
+        "Medium": {
+          "pressure_bar": 750,
+          "freq_hz": 10,
+          "pulse_us": 850,
+          "duration_s": 30,
+          "vol_target": 35.0,
+          "vol_min": 30.0,
+          "vol_max": 40.0,
+          "return_min": 50,
+          "return_max": 110,
+          "leak_limit_bar": null
+        },
+        "Full Load": {
+          "pressure_bar": 1500,
+          "freq_hz": 15,
+          "pulse_us": 1350,
+          "duration_s": 30,
+          "vol_target": 110.0,
+          "vol_min": 95.0,
+          "vol_max": 125.0,
+          "return_min": 80,
+          "return_max": 170,
+          "leak_limit_bar": null
+        },
+        "CamBox": {
+          "pressure_bar": 850,
+          "freq_hz": 12,
+          "pulse_us": 1050,
+          "duration_s": 30,
+          "vol_target": 55.0,
+          "vol_min": 48.0,
+          "vol_max": 62.0,
+          "return_min": 60,
+          "return_max": 130,
+          "leak_limit_bar": null
+        }
+      }
+    }
+  ]
+}

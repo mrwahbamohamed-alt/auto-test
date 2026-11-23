@@ -37,6 +37,75 @@ N_SAMPLES    = 300
 TELEMETRY_MS = 10
 GRAPH_FPS    = 30
 
+# Display-only localization catalog. Protocol commands, profile keys, and
+# exported field names remain English and are intentionally not translated.
+UI_TRANSLATIONS = {
+    "en": {
+        "language_toggle": "العربية",
+        "connection": "CONNECTION", "connect": "CONNECT", "disconnect": "DISCONNECT",
+        "disconnected": "DISCONNECTED", "connected": "CONNECTED", "no_data": "NO DATA",
+        "calibration": "CALIBRATION TABLE  —  DELIVERY SPEC  (ml / 1000 pulses)",
+        "injector_model": "INJECTOR MODEL", "save_as": "SAVE AS…", "update": "UPDATE",
+        "delete": "DELETE", "q_inject": "Q INJECT  —  ml", "waveform": "WAVEFORM",
+        "freeze": "FREEZE", "live": "LIVE", "frozen": "FROZEN", "injector_profile": "INJECTOR PROFILE",
+        "add": "+ ADD", "injection_mode": "INJECTION MODE", "common_rail": "Common Rail",
+        "cambox_sync": "CamBox  (Sync)", "parameters": "PARAMETERS", "coils": "COILS",
+        "relay": "RELAY  ·  PEAK SUPPLY", "single_shot": "VALVE SINGLE-SHOT", "actuators": "ACTUATORS",
+        "measurements": "MEASUREMENTS", "auto_reconnect": "Auto-Reconnect", "off": "OFF",
+        "test_mode": "Test Mode", "rpm": "RPM", "pulse_header": "PW (µs)", "time": "Time (s)",
+        "target_ml": "Target (ml)", "min": "Min", "max": "Max", "unit": "Unit",
+        "actual": "Actual", "status": "Status", "pulse_width": "PULSE WIDTH (µs)",
+        "frequency_hz": "FREQUENCY (Hz)", "delay_angle": "DELAY ANGLE (°)", "delay_ms": "DELAY  —  ms",
+        "delay": "DELAY", "waiting_rpm": "DELAY  —  waiting for RPM signal",
+        "rpm_divisor": "RPM DIVISOR", "pressure_divisor": "PRESSURE DIVISOR", "injector_id": "INJECTOR ID",
+        "brand": "BRAND", "model": "MODEL", "port": "PORT", "baud": "BAUD",
+        "on": "ON", "enabled": "ENABLED", "disabled": "DISABLED", "fault": "FAULT", "ok": "OK",
+        "shot": "▶  SHOT", "run": "▶  RUN", "stop_run": "■  STOP", "fire_shot": "▶  FIRE SHOT",
+        "start": "  START", "stop": "  STOP", "sync": "↺  SYNC PARAMS", "save_pdf": "  SAVE PDF REPORT",
+        "export_csv": "  EXPORT CSV", "set_zero": "◎  SET ZERO PRESSURE", "engine": "ENGINE",
+        "stopped": "STOPPED", "running": "RUNNING", "inj_pulse": "INJ PULSE", "target_rpm": "Target RPM",
+        "leak_test": "LEAK TEST (no injection)", "common_rail_mode": "COMMON RAIL", "cambox_mode": "CAMBOX",
+        "cam_box": "⇄  CAM BOX", "common_rail_switch": "⇄  COMMON RAIL", "pulses": "PULSES:",
+        "packet_rate": "PKT:", "bar": "bar", "duty": "duty:", "frequency": "f:",
+        "pressure": "PRESSURE", "injection": "INJECTION", "cam": "CAM", "pass": "PASS", "fail": "FAIL",
+        "not_tested": "— not tested", "no_measurements": "NO MEASUREMENTS ENTERED", "overall": "OVERALL:",
+        "report_saved": "Report Saved", "exit": "EXIT", "select_system": "SELECT OPERATING SYSTEM",
+        "language_english": "English", "light_mode": "LIGHT MODE", "dark_mode": "DARK MODE",
+    },
+    "ar": {
+        "language_toggle": "English",
+        "connection": "الاتصال", "connect": "اتصال", "disconnect": "قطع الاتصال",
+        "disconnected": "غير متصل", "connected": "متصل", "no_data": "لا توجد بيانات",
+        "calibration": "جدول المعايرة  —  مواصفات التدفق (مل / 1000 نبضة)",
+        "injector_model": "طراز الحاقن", "save_as": "حفظ باسم…", "update": "تحديث",
+        "delete": "حذف", "q_inject": "كمية الحقن  —  مل", "waveform": "شكل الموجة",
+        "freeze": "تجميد", "live": "مباشر", "frozen": "مجمد", "injector_profile": "ملف الحاقن",
+        "add": "+ إضافة", "injection_mode": "وضع الحقن", "common_rail": "سكة مشتركة",
+        "cambox_sync": "كام بوكس  (متزامن)", "parameters": "المعلمات", "coils": "الملفات",
+        "relay": "المرحل  ·  تغذية الذروة", "single_shot": "طلقة صمام مفردة", "actuators": "المشغلات",
+        "measurements": "القياسات", "auto_reconnect": "إعادة اتصال تلقائية", "off": "إيقاف",
+        "test_mode": "وضع الاختبار", "rpm": "دورة/دقيقة", "pulse_header": "عرض النبضة (ميكروثانية)",
+        "time": "الوقت (ث)", "target_ml": "الهدف (مل)", "min": "الأدنى", "max": "الأقصى",
+        "unit": "الوحدة", "actual": "الفعلي", "status": "الحالة", "pulse_width": "عرض النبضة (ميكروثانية)",
+        "frequency_hz": "التردد (هرتز)", "delay_angle": "زاوية التأخير (°)", "delay_ms": "التأخير  —  مللي ثانية",
+        "delay": "التأخير", "waiting_rpm": "التأخير  —  في انتظار إشارة سرعة المحرك",
+        "rpm_divisor": "مقسم سرعة المحرك", "pressure_divisor": "مقسم الضغط", "injector_id": "معرف الحاقن",
+        "brand": "العلامة", "model": "الطراز", "port": "المنفذ", "baud": "معدل النقل",
+        "on": "تشغيل", "enabled": "مفعل", "disabled": "معطل", "fault": "عطل", "ok": "سليم",
+        "shot": "▶  طلقة", "run": "▶  تشغيل", "stop_run": "■  إيقاف", "fire_shot": "▶  إطلاق طلقة",
+        "start": "  بدء", "stop": "  إيقاف", "sync": "↺  مزامنة المعلمات", "save_pdf": "  حفظ تقرير PDF",
+        "export_csv": "  تصدير CSV", "set_zero": "◎  ضبط ضغط الصفر", "engine": "المحرك",
+        "stopped": "متوقف", "running": "يعمل", "inj_pulse": "نبضة الحقن", "target_rpm": "سرعة المحرك المطلوبة",
+        "leak_test": "اختبار التسرب (بدون حقن)", "common_rail_mode": "سكة مشتركة", "cambox_mode": "كام بوكس",
+        "cam_box": "⇄  كام بوكس", "common_rail_switch": "⇄  السكة المشتركة", "pulses": "النبضات:",
+        "packet_rate": "الحزم:", "bar": "بار", "duty": "نسبة التشغيل:", "frequency": "التردد:",
+        "pressure": "الضغط", "injection": "الحقن", "cam": "الكام", "pass": "ناجح", "fail": "فشل",
+        "not_tested": "— لم يُختبر", "no_measurements": "لم تُدخل قياسات", "overall": "النتيجة:",
+        "report_saved": "تم حفظ التقرير", "exit": "خروج", "select_system": "اختر نظام التشغيل",
+        "language_english": "العربية", "light_mode": "الوضع الفاتح", "dark_mode": "الوضع الداكن",
+    },
+}
+
 # ══════════════════════════════════════════════════════════════════════
 #  PRESSURE CALIBRATION — all done in Python (ESP32 sends raw VX4 mV)
 #  Sensor supply : 5V
@@ -801,7 +870,7 @@ class SafetyValidator:
     """Hard-limit validation before any command reaches the ESP32."""
 
     # Absolute hardware limits (never exceeded regardless of profile)
-    ABS_MAX_PULSE_US  = 3000
+    ABS_MAX_PULSE_US  = 5000
     ABS_MIN_PULSE_US  = 200
     ABS_MAX_FREQ_HZ   = 100
     ABS_MIN_FREQ_HZ   = 1
@@ -859,9 +928,13 @@ class SessionLogger:
     ]
 
     def __init__(self):
-        if not _LOG_PATH.exists():
-            with open(_LOG_PATH, "w", newline="", encoding="utf-8") as f:
-                _csv.writer(f).writerow(self._HEADER)
+        try:
+            _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            if not _LOG_PATH.exists():
+                with open(_LOG_PATH, "w", newline="", encoding="utf-8") as f:
+                    _csv.writer(f).writerow(self._HEADER)
+        except Exception as e:
+            logging.warning(f"Session log initialization failed: {e}")
 
     def log(self, row: dict):
         try:
@@ -977,6 +1050,45 @@ class SerialWorker(QObject):
                 self.error_occurred.emit(f"Write: {e}")
 
 
+def _find_esp32_port(baud=115200):
+    """Return the first serial port that answers the ESP32 COILS query."""
+    ports = list(serial.tools.list_ports.comports())
+    esp32_usb_ids = {(0x303A, None), (0x10C4, 0xEA60), (0x1A86, 0x7523),
+                     (0x0403, 0x6001)}
+
+    def priority(info):
+        usb_id = (info.vid, info.pid)
+        description = f"{info.description} {info.manufacturer} {info.product}".lower()
+        return (0 if usb_id in esp32_usb_ids or "esp32" in description else 1,
+                info.device)
+
+    for info in sorted(ports, key=priority):
+        probe = None
+        try:
+            probe = serial.Serial()
+            probe.port = info.device
+            probe.baudrate = baud
+            probe.timeout = 0.2
+            probe.dsrdtr = False
+            probe.rtscts = False
+            probe.dtr = None
+            probe.rts = None
+            probe.open()
+            probe.reset_input_buffer()
+            probe.write(b"COILS\n")
+            deadline = time.time() + 0.8
+            while time.time() < deadline:
+                line = probe.readline().decode("utf-8", errors="ignore").strip()
+                if line.startswith("COILS:"):
+                    return info.device
+        except (OSError, serial.SerialException):
+            pass
+        finally:
+            if probe and probe.is_open:
+                probe.close()
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  MAIN WINDOW
 # ══════════════════════════════════════════════════════════════════════
@@ -986,8 +1098,9 @@ class DieselDashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle("INJECTOR PRO  ·  Diesel Injection Test System")
         self.resize(1400, 860)
-        self.setMinimumWidth(900)   # prevent overflow on smaller screens
+        self.setMinimumSize(0, 0)
         self.setStyleSheet(STYLE_DARK)
+        self._language = "en"
 
         # ── buffers ───────────────────────────────────────────────────
         self.pressure_buf = deque([0.0] * N_SAMPLES, maxlen=N_SAMPLES)
@@ -1104,12 +1217,70 @@ class DieselDashboard(QMainWindow):
         self._port_timer.timeout.connect(self._refresh_ports)
         self._port_timer.start(2000)
         self._refresh_ports()
+        QTimer.singleShot(250, self._auto_connect_esp32)
 
         self._graph_timer = QTimer()
         self._graph_timer.timeout.connect(self._tick)
         self._graph_timer.start(1000 // GRAPH_FPS)
 
         self._setup_shortcuts()
+
+    def _display_text(self, text: str) -> str:
+        """Translate an exact display term or its known status fragments."""
+        if not text:
+            return text
+        catalog = UI_TRANSLATIONS
+        for key, english in catalog["en"].items():
+            arabic = catalog["ar"].get(key, english)
+            if text == english or text == arabic:
+                return catalog[self._language].get(key, english)
+
+        translated = text
+        pairs = []
+        for key, english in catalog["en"].items():
+            arabic = catalog["ar"].get(key, english)
+            if english != arabic:
+                pairs.append((english, arabic, key))
+        for english, arabic, key in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
+            source = english if self._language == "ar" else arabic
+            target = arabic if self._language == "ar" else english
+            if source in translated:
+                translated = translated.replace(source, target)
+        return translated
+
+    def _refresh_language(self):
+        """Refresh visible display text while preserving internal widget data."""
+        for widget in [self, *self.findChildren(QWidget)]:
+            class_name = widget.__class__.__name__
+            if class_name == "QGroupBox":
+                widget.setTitle(self._display_text(widget.title()))
+            elif class_name in {"QLabel", "QPushButton", "QRadioButton", "QCheckBox", "QToolButton"}:
+                widget.setText(self._display_text(widget.text()))
+            if class_name == "QLineEdit":
+                widget.setPlaceholderText(self._display_text(widget.placeholderText()))
+            if widget.toolTip():
+                widget.setToolTip(self._display_text(widget.toolTip()))
+
+            if class_name == "QComboBox":
+                for index in range(widget.count()):
+                    widget.setItemText(index, self._display_text(widget.itemText(index)))
+
+        if hasattr(self, "_calib_table"):
+            header = self._calib_table.horizontalHeader()
+            labels = [header.model().headerData(i, Qt.Orientation.Horizontal)
+                      for i in range(self._calib_table.columnCount())]
+            self._calib_table.setHorizontalHeaderLabels(
+                [self._display_text(str(label)) for label in labels])
+        if hasattr(self, "language_btn"):
+            self.language_btn.setText(UI_TRANSLATIONS[self._language]["language_toggle"])
+        direction = (Qt.LayoutDirection.RightToLeft if self._language == "ar"
+                     else Qt.LayoutDirection.LeftToRight)
+        QApplication.instance().setLayoutDirection(direction)
+        self.setLayoutDirection(direction)
+
+    def _toggle_language(self):
+        self._language = "ar" if self._language == "en" else "en"
+        self._refresh_language()
 
     # ──────────────────────────────────────────────────────────────────
     #  KEYBOARD SHORTCUTS  (test-bench ergonomics + emergency stop)
@@ -1152,8 +1323,10 @@ class DieselDashboard(QMainWindow):
         body.setContentsMargins(12, 10, 12, 12)
         body.setSpacing(12)
 
-        body.addWidget(self._make_left(),  stretch=0)
-        body.addWidget(self._make_right(), stretch=1)
+        body.addWidget(self._make_left(),  stretch=1)
+        body.addWidget(self._make_right(), stretch=3)
+        body.setStretch(0, 1)
+        body.setStretch(1, 3)
 
         main.addLayout(body)
 
@@ -1223,6 +1396,17 @@ class DieselDashboard(QMainWindow):
         """)
         self.theme_btn.clicked.connect(self._toggle_theme)
 
+        self.language_btn = QPushButton(UI_TRANSLATIONS[self._language]["language_toggle"])
+        self.language_btn.setFixedHeight(28)
+        self.language_btn.setToolTip("Toggle Arabic / English")
+        self.language_btn.setStyleSheet(f"""
+            QPushButton {{background:{BORDER};color:{TXT_SEC};
+                          border:1px solid {BORDER2};border-radius:6px;
+                          font-size:10px;padding:0 10px;font-weight:600;}}
+            QPushButton:hover {{background:{BORDER2};color:{TXT_PRI};border-color:{PH_GREEN};}}
+        """)
+        self.language_btn.clicked.connect(self._toggle_language)
+
         h.addWidget(logo)
         h.addSpacing(30)
         h.addWidget(self.hdr_mode)
@@ -1240,6 +1424,8 @@ class DieselDashboard(QMainWindow):
         h.addWidget(self.hdr_pulses)
         h.addSpacing(20)
         h.addWidget(self._vsep())
+        h.addSpacing(10)
+        h.addWidget(self.language_btn)
         h.addSpacing(10)
         h.addWidget(self.theme_btn)
         h.addSpacing(10)
@@ -1272,7 +1458,8 @@ class DieselDashboard(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(340)
+        scroll.setMinimumWidth(220)
+        scroll.setMaximumWidth(360)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -1287,13 +1474,15 @@ class DieselDashboard(QMainWindow):
         v = QVBoxLayout(inner); v.setSpacing(8); v.setContentsMargins(0, 0, 0, 0)
 
         # Row 1: Live measurement meters (BAR / RPM / INJ)
-        v.addWidget(self._panel_meters())
+        v.addWidget(self._panel_meters(), stretch=1)
 
         # Row 3: Main body — calibration table | cylinders
         body = QHBoxLayout(); body.setSpacing(8)
-        body.addWidget(self._panel_cylinders())
+        body.addWidget(self._panel_cylinders(), stretch=2)
         body.addWidget(self._panel_calib_table(), stretch=1)
         v.addLayout(body, stretch=4)
+        v.setStretch(0, 1)
+        v.setStretch(1, 4)
 
         return inner
 
@@ -1551,7 +1740,7 @@ class DieselDashboard(QMainWindow):
         pv = QHBoxLayout(); pv.setSpacing(6); pv.setContentsMargins(0, 0, 0, 4)
         pv.addWidget(self._dim("INJECTOR MODEL"))
         self.preset_combo = QComboBox()
-        self.preset_combo.setMinimumWidth(240)
+        self.preset_combo.setMinimumWidth(80)
         self.preset_combo.setToolTip("Pick an injector model to auto-fill the calibration table.\n"
                                      "You can still edit any cell after loading.")
         self._refresh_preset_combo()
@@ -1575,8 +1764,9 @@ class DieselDashboard(QMainWindow):
 
         # apply theme-neutral styling to the buttons
         for b in (self.preset_save_btn, self.preset_update_btn, self.preset_delete_btn):
+            b.setMinimumWidth(0)
             b.setStyleSheet(
-                "QPushButton { padding:4px 10px; font-size:10px; font-weight:600;"
+                "QPushButton { padding:4px 6px; font-size:10px; font-weight:600;"
                 " letter-spacing:1px; border-radius:5px; }"
             )
         v.addLayout(pv)
@@ -1590,7 +1780,8 @@ class DieselDashboard(QMainWindow):
             QHeaderView.ResizeMode.Stretch)
         self._calib_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Fixed)
-        self._calib_table.setColumnWidth(0, 148)
+        self._calib_table.setColumnWidth(0, 110)
+        self._calib_table.horizontalHeader().setMinimumSectionSize(0)
         self._calib_table.verticalHeader().setVisible(False)
         self._calib_table.verticalHeader().setDefaultSectionSize(72)
         self._calib_table.setWordWrap(False)
@@ -1737,7 +1928,7 @@ class DieselDashboard(QMainWindow):
             )
             self._cylinders[mname] = cg
             h.addWidget(cg, stretch=1)
-        box.setMinimumWidth(300)   # was setFixedWidth(500) — allow flexible width
+        box.setMinimumWidth(0)
         return box
 
     def _refresh_cylinders(self, profile: dict | None):
@@ -1992,7 +2183,9 @@ class DieselDashboard(QMainWindow):
             sl.valueChanged.connect(sp.setValue)
             return lbl, sp, sl
 
-        self.pw_lbl, self.pw_sp, self.pw_sl = row("PULSE WIDTH (µs)", 200, 3000, 1000, 50)
+        self.pw_lbl, self.pw_sp, self.pw_sl = row(
+            "PULSE WIDTH (µs)", SafetyValidator.ABS_MIN_PULSE_US,
+            SafetyValidator.ABS_MAX_PULSE_US, 1000, 50)
         self.fr_lbl, self.fr_sp, self.fr_sl = row("FREQUENCY (Hz)",     1,  100,   25)
         self.an_lbl, self.an_sp, self.an_sl = row("DELAY ANGLE (°)",    0,   45,    0)
 
@@ -3929,11 +4122,11 @@ class DieselDashboard(QMainWindow):
     def _toggle_freeze(self, checked: bool):
         self._display_frozen = checked
         if checked:
-            self._freeze_status.setText("  FROZEN")
+            self._freeze_status.setText(self._display_text("  FROZEN"))
             self._freeze_status.setStyleSheet(
                 f"color:{PH_AMBER}; font-size:10px; font-family:monospace;")
         else:
-            self._freeze_status.setText("  LIVE")
+            self._freeze_status.setText(self._display_text("  LIVE"))
             self._freeze_status.setStyleSheet(
                 f"color:{PH_GREEN}; font-size:10px; font-family:monospace;")
             # Force immediate redraw on unfreeze
@@ -3978,7 +4171,7 @@ class DieselDashboard(QMainWindow):
         self._dark_mode = not self._dark_mode
         dk = self._dark_mode
         self.setStyleSheet(STYLE_DARK if dk else STYLE_LIGHT)
-        self.theme_btn.setText("LIGHT MODE" if dk else "DARK MODE")
+        self.theme_btn.setText(self._display_text("LIGHT MODE" if dk else "DARK MODE"))
 
         # Swap the application palette so Fusion matches the active theme
         app = QApplication.instance()
@@ -4017,7 +4210,7 @@ class DieselDashboard(QMainWindow):
         dk = self._dark_mode
 
         # ── button text reflects current mode ─────────────────────────
-        self.theme_btn.setText("LIGHT MODE" if dk else "DARK MODE")
+        self.theme_btn.setText(self._display_text("LIGHT MODE" if dk else "DARK MODE"))
 
         # ── restyle the measurement meters + INJ / ENGINE frames ─────
         # These are built once with the boot-time `dk` and never touched
@@ -4356,7 +4549,7 @@ class DieselDashboard(QMainWindow):
         self._cnt_rpm         = 0
         self._max_rpm         = 0
         self.total_pulses     = 0
-        self.run_lbl.setText("RUNNING")
+        self.run_lbl.setText(self._display_text("RUNNING"))
         self.run_lbl.setStyleSheet(
             f"color:{PH_GREEN}; font-family:monospace; border:none;")
         self.hdr_timer.setStyleSheet(
@@ -4369,7 +4562,7 @@ class DieselDashboard(QMainWindow):
         # Auto-log session
         self._log_session()
         self._session_start = None
-        self.run_lbl.setText("STOPPED")
+        self.run_lbl.setText(self._display_text("STOPPED"))
         self.run_lbl.setStyleSheet(
             f"color:{PH_RED}; font-family:monospace; border:none;")
         self.hdr_timer.setStyleSheet(
@@ -4423,14 +4616,14 @@ class DieselDashboard(QMainWindow):
         if self._last_data_time > 0 and age > 3.0:
             if not self._watchdog_stale:
                 self._watchdog_stale = True
-                self.hdr_conn.setText("⚠  NO DATA")
+                self.hdr_conn.setText(self._display_text("⚠  NO DATA"))
                 self.hdr_conn.setStyleSheet(
                     f"color:{PH_AMBER}; font-size:11px; font-family:monospace;")
         else:
             if self._watchdog_stale:
                 self._watchdog_stale = False
                 port = self.port_combo.currentText()
-                self.hdr_conn.setText(f"●  {port}  CONNECTED")
+                self.hdr_conn.setText(self._display_text(f"●  {port}  CONNECTED"))
                 self.hdr_conn.setStyleSheet(
                     f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
 
@@ -4443,7 +4636,7 @@ class DieselDashboard(QMainWindow):
     def _on_pkt_tick(self, pps):
         self._pkt_rate = pps
         color = PH_GREEN if pps >= 80 else PH_AMBER if pps >= 30 else PH_RED
-        self.hdr_pkt.setText(f"PKT: {pps}/s")
+        self.hdr_pkt.setText(self._display_text(f"PKT: {pps}/s"))
         self.hdr_pkt.setStyleSheet(
             f"color:{color}; font-size:11px; font-family:monospace;")
 
@@ -4630,6 +4823,15 @@ class DieselDashboard(QMainWindow):
                 self.port_combo.setCurrentText(cur)
             self.port_combo.blockSignals(False)
 
+    def _auto_connect_esp32(self):
+        if self.worker.is_running:
+            return
+        port = _find_esp32_port()
+        if not port:
+            return
+        self.port_combo.setCurrentText(port)
+        self.worker.connect_device(port, int(self.baud_combo.currentText()))
+
     def _toggle_conn(self):
         if not self.worker.is_running:
             port = self.port_combo.currentText()
@@ -4666,12 +4868,12 @@ class DieselDashboard(QMainWindow):
     def _on_conn(self, ok):
         self._style_conn_btn(ok)
         if ok:
-            self.conn_btn.setText("DISCONNECT")
-            self.conn_lbl.setText("●  CONNECTED")
+            self.conn_btn.setText(self._display_text("DISCONNECT"))
+            self.conn_lbl.setText(self._display_text("●  CONNECTED"))
             self.conn_lbl.setStyleSheet(
                 f"color:{PH_GREEN}; font-weight:bold; font-size:11px; font-family:monospace;")
             port = self.port_combo.currentText()
-            self.hdr_conn.setText(f"●  {port}  CONNECTED")
+            self.hdr_conn.setText(self._display_text(f"●  {port}  CONNECTED"))
             self.hdr_conn.setStyleSheet(
                 f"color:{PH_GREEN}; font-size:11px; font-family:monospace;")
             # Sync coil mask + relay + per-coil config in case it's already running.
@@ -4711,11 +4913,11 @@ class DieselDashboard(QMainWindow):
             self._on_mode(mid)
             self.worker.send_command("MV")           # request MV snapshot to sync UI
         else:
-            self.conn_btn.setText("CONNECT")
-            self.conn_lbl.setText("●  DISCONNECTED")
+            self.conn_btn.setText(self._display_text("CONNECT"))
+            self.conn_lbl.setText(self._display_text("●  DISCONNECTED"))
             self.conn_lbl.setStyleSheet(
                 f"color:{PH_RED}; font-weight:bold; font-size:11px; font-family:monospace;")
-            self.hdr_conn.setText("●  DISCONNECTED")
+            self.hdr_conn.setText(self._display_text("●  DISCONNECTED"))
             self.hdr_conn.setStyleSheet(
                 f"color:{PH_RED}; font-size:11px; font-family:monospace;")
             self._p_vx4_ema    = 0.0
@@ -4905,7 +5107,7 @@ class DieselDashboard(QMainWindow):
             self.mv_p_lbl.setText(f"P: {self._snap_p:.0f} bar")
 
         # Header pulse counter
-        self.hdr_pulses.setText(f"PULSES: {self.total_pulses:,}")
+        self.hdr_pulses.setText(self._display_text(f"PULSES: {self.total_pulses:,}"))
 
 
         # CamBox delay label
@@ -4998,7 +5200,13 @@ if __name__ == "__main__":
             super().__init__()
             self.setWindowTitle("INJECTOR PRO")
             self.setModal(True)
-            self.setFixedSize(620, 360)
+            screen = QApplication.primaryScreen()
+            available = screen.availableGeometry() if screen else None
+            screen_width = available.width() if available else 620
+            screen_height = available.height() if available else 360
+            self.setFixedSize(
+                min(620, max(480, screen_width - 40)),
+                min(360, max(300, screen_height - 40)))
             self.setWindowFlag(_Qt.WindowType.FramelessWindowHint)
             self.choice = None
 
@@ -5031,7 +5239,7 @@ if __name__ == "__main__":
             def option(title, subtitle, meta, colour, on_click):
                 b = QPushButton()
                 b.setCursor(_Qt.CursorShape.PointingHandCursor)
-                b.setMinimumHeight(200)
+                b.setMinimumHeight(130)
                 # title / subtitle / meta stacked inside the button
                 inner = QVBoxLayout(b)
                 inner.setContentsMargins(18, 18, 18, 18); inner.setSpacing(6)

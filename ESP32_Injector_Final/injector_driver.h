@@ -1,11 +1,31 @@
 /**
- * injector_driver.h
- * Peak & Hold driver — MODE_COMMON_RAIL only.
- * EUI/EUP (CamBox / flat-pulse RMT) path is NOT affected.
+ * injector_driver.h  —  CamBox Pro (3-coil build)
+ * ---------------------------------------------------------------------------
+ * THREE PEAK & HOLD CHANNELS.
  *
- *  Waveform per pulse:
- *  ┌─────peak_us──────┐  soft transition  ┌──── hold (chop) ────┐
- *  │   100 % HIGH     │  2 × 50 % cycles  │  on_us / period_us  │ LOW
+ *   Coil1 → GPIO18   (also the SCV/PCV valve output in PUMP mode)
+ *   Coil2 → GPIO23
+ *   Coil3 → GPIO4
+ *
+ * Each coil is individually enabled/disabled from the dashboard
+ * (COIL <n> ON|OFF) and can be single-shot with FIRE <n>. There is NO LCD or
+ * keypad — all control is over the Python serial dashboard.
+ *
+ * Two ways GPIO18 is driven (mode-dependent, never both at once):
+ *   • Peak & Hold pulse  — timed solenoid pulse (CAM / fixed-frequency modes).
+ *   • LEDC PWM duty       — continuous valve drive for closed-loop pressure
+ *                           control (PID) in pump/rail mode.
+ *   In PUMP mode Coil1 belongs to the PID loop and is never Peak & Hold fired;
+ *   Coil2/Coil3 stay available as ordinary P&H channels.
+ *
+ * Peak & Hold waveform:
+ *   ┌─────peak_us──────┐  soft transition  ┌──── hold (chop) ────┐
+ *   │   100 % HIGH     │  2 × 50 % cycles  │  on_us / (on+off)   │ LOW
+ *
+ * CHOP RATE — FIXED AT 10 kHz (100 µs period). 25 kHz was proven to accumulate
+ * coil current and overheat the solenoid; 10 kHz lets current decay each cycle.
+ * Do not raise it.
+ * ---------------------------------------------------------------------------
  */
 #pragma once
 
@@ -13,40 +33,82 @@
 #include "driver/gpio.h"
 #include "soc/gpio_struct.h"
 
-// ── Pins (must match PIN_INJECTOR in .ino) ───────────────────────────
-#define INJECTOR_PIN      23              // RMT / GPIO injector output
-#define DEBUG_PIN         GPIO_NUM_26     // oscilloscope trigger
+// ── Coil outputs + debug pin ─────────────────────────────────────────
+#define COIL_PIN      18              // Coil1 — legacy alias, also SCV/PCV in PUMP
+#define COIL1_PIN     18              // Coil1
+#define COIL2_PIN     23              // Coil2
+#define COIL3_PIN      4              // Coil3
+#define NUM_COILS      3
+#define DEBUG_PIN     GPIO_NUM_26     // oscilloscope trigger (free during test)
 
-// ── Safety limits & defaults ─────────────────────────────────────────
-#define PH_PW_MIN_US     200UL            // absolute minimum total PW
-#define PH_PW_MAX_US    5000UL            // fault threshold
-#define PH_PEAK_US_DEF   175UL            // 175 µs flat peak phase
-// ── Chop period — 10 kHz is safe for both brands ─────────────────────
-//   25 kHz (40µs) caused current accumulation → coil overheating
-//   10 kHz (100µs) allows proper current decay each cycle
-#define PH_PERIOD_US_DEF  100UL           // 100 µs period → 10 kHz chop
+// Index → GPIO map (index 0..NUM_COILS-1 == "COIL 1..3" on the wire).
+extern const uint32_t COIL_PINS[NUM_COILS];
 
-// ── Hold ON time per brand (at period = 100µs) ────────────────────────
-//   Bosch CRIN  (~0.5 Ω) : 7µs ON / 93µs OFF  → I ≈ 2.1A, P ≈ 2.1W ✅
-//   Denso CR    (~0.3 Ω) : 5µs ON / 95µs OFF  → I ≈ 1.8A, P ≈ 0.9W ✅
-//   Serial commands:
-//     Bosch  → SET_PH 175 100 7
-//     Denso  → SET_PH 175 100 5
-#define PH_ON_US_BOSCH_DEF   7UL
-#define PH_ON_US_DENSO_DEF   5UL
-#define PH_ON_US_DEF  PH_ON_US_BOSCH_DEF   // startup default = Bosch
+// ── Pulse-width safety window (total PW) ─────────────────────────────
+#define PH_PW_MIN_US   100UL          // reject total PW below this
+#define PH_PW_MAX_US  5000UL          // reject total PW above this (fault)
 
-// ── Runtime config (tunable via SET_PH command) ──────────────────────
+// ── METERING VALVE (Bosch ZME) — Coil1 / GPIO18, proportional PWM ────
+//   Low-side switch through TLP250 → 2× IRFP260N in parallel. Coil ~2.5 Ω
+//   from 12 V ⇒ steady-state current ≈ 4.8 A at 100 % duty. HARD LIMIT
+//   average current ≤ 1.8 A, so we clamp average duty at 30 % (≈ 1.6 A).
+//   Valve is NORMALLY OPEN: 0 % duty = max fuel / min pressure,
+//   higher duty = more restriction = higher rail pressure. So the PID
+//   direction is REVERSE — see pid_compute() for the sign convention.
+#define MV_PIN            COIL1_PIN         // GPIO18
+#define MV_PWM_FREQ_DEF   200UL              // default carrier 200 Hz
+#define MV_PWM_FREQ_MIN   100UL              // runtime range (MV_FREQ command)
+#define MV_PWM_FREQ_MAX   1000UL
+#define MV_PWM_RES        12                 // 12-bit resolution (kept on freq change)
+#define MV_PWM_MAX        ((1UL << MV_PWM_RES) - 1UL)     // 4095
+#define MV_MAX_DUTY_PCT   30                 // safety cap (% of full duty)
+#define MV_MAX_RAW        ((MV_PWM_MAX * MV_MAX_DUTY_PCT) / 100)  // ≈ 1228
+#define MV_MAX_CURRENT_A  1.8f               // for current-sense mode (optional)
+#define MV_SOFTSTART_MS   200                // soft-start ramp on enable
+// #define MV_CURRENT_SENSE_PIN 34           // uncomment if shunt+amp wired
+
+// ── Peak & Hold defaults ─────────────────────────────────────────────
+//   Peak : 350 µs at full voltage — a STRONG opening kick that snaps the
+//          needle fully open (was 175 µs). Hold : 10 kHz chop (on+off=100 µs).
+//   Bosch CRIN (~0.5 Ω): 7 µs ON / 93 µs OFF  → I ≈ 2.1 A  (safe)
+//   Denso CR   (~0.3 Ω): 5 µs ON / 95 µs OFF  → I ≈ 1.8 A  (safe)
+//
+//   ⚠ The PEAK phase is FULL VOLTAGE. With a 24 V supply, ~0.5 Ω ballast and a
+//     ~0.3–0.5 Ω coil, peak current is ~25–30 A. The MOSFET must be rated for
+//     that peak, and the ballast resistor for the average power. Peak & Hold is
+//     a SINGLE, non-repeating shot — never auto-repeat it at these levels.
+#define PH_PEAK_US_DEF     600UL      // stronger needle-lift kick (was 350;
+                                     // some CR injectors need this long a
+                                     // peak on 24V with a hefty ballast to
+                                     // actually snap the needle open)
+#define PH_PEAK_US_MAX    1500UL      // extended headroom for tuning up
+                                     // (was 800). Long peaks dissipate a
+                                     // LOT in the ballast — heatsink it,
+                                     // and don't repeat faster than needed.
+#define PH_HOLD_ON_DEF       7UL      // Bosch startup default
+#define PH_HOLD_OFF_DEF     93UL      // 7 + 93 = 100 µs → 10 kHz
+
+// ── Runtime config — set via SET_PH <peak_us> <hold_on_us> <hold_off_us>
 typedef struct {
-    uint32_t peak_us;    // Peak phase duration (µs)  — flat 100 % HIGH
-    uint32_t period_us;  // Chop period (µs)          — 40 µs @ 25 kHz
-    uint32_t on_us;      // ON time per chop cycle    — 10 µs = 25 % duty
+    uint32_t peak_us;      // flat 100 % HIGH peak phase
+    uint32_t hold_on_us;   // chop ON  time
+    uint32_t hold_off_us;  // chop OFF time  (period = on + off = 100 µs @ 10 kHz)
 } peak_hold_config_t;
 
-// ── Globals (defined in injector_driver.cpp) ─────────────────────────
 extern peak_hold_config_t g_ph_config;
-extern bool               g_use_peak_hold;  // false = RMT flat  |  true = P&H
 
 // ── API ──────────────────────────────────────────────────────────────
-void init_debug_pin();
-void fire_common_rail(uint32_t total_pw_us);   // IRAM_ATTR on definition
+void coil_pins_init();     // GPIO18/23/4 outputs LOW + debug pin
+void init_debug_pin();     // GPIO26 push-pull output, LOW
+
+// Fire one channel with the full Peak & Hold waveform.
+// BLOCKING: interrupts are masked for the whole pulse (~total_pw_us). Firing
+// several coils back to back costs N × total_pw_us — see the blocking-budget
+// note in FIRMWARE_REPORT.md before enabling all three at high RPM.
+void fire_peak_hold_pin(uint32_t pin, uint32_t total_pw_us, bool mark_debug);
+
+// Legacy single-coil entry point — fires Coil1 (GPIO18). Kept so existing
+// call sites and any older sketch keep compiling unchanged.
+inline void fire_peak_hold(uint32_t total_pw_us, bool mark_debug) {
+    fire_peak_hold_pin((uint32_t)COIL1_PIN, total_pw_us, mark_debug);
+}
